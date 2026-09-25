@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In · Kidoory Bedtime Stories Studio</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="login-body">
+  <div class="stars-bg"></div>
+  <main class="login-card">
+    <div class="brand">
+      <div class="logo-icon">🌙✨</div>
+      <h1>Kidoory Studio</h1>
+      <p class="tagline">Bedtime Stories for Little Dreamers</p>
+    </div>
+
+    {% if error %}
+    <div class="alert error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login" class="login-form">
+      <label for="password">Studio Access Password</label>
+      <input type="password" id="password" name="password" required autofocus placeholder="Enter studio password...">
+      <button type="submit" class="btn primary">Sign in to Kidoory Studio →</button>
+    </form>
+    <div class="login-footer">
+      <span>Dedicated Port 5009 · Zero-Cost Google AI Studio Free Tier</span>
+    </div>
+  </main>
+</body>
+</html>

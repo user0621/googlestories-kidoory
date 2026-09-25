@@ -1,0 +1,21 @@
+[Unit]
+Description=Google Stories Autonomous 24/7 Story Producer
+After=network.target local-fs.target
+
+[Service]
+Type=simple
+User=hkserver
+WorkingDirectory=/home/hkserver/myentrykey-auto-youtube/kidoory_engine
+ExecStart=/home/hkserver/myentrykey-auto-youtube/.venv/bin/python /home/hkserver/myentrykey-auto-youtube/kidoory_engine/autonomous_daemon.py --daemon --interval 3600
+Restart=always
+RestartSec=10s
+CPUWeight=50
+CPUQuota=400%
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment="GEMINI_API_KEY=AIzaSyC3a50b9lMb5FpzClrQOL7qT0mBYcrds3I"
+Environment="GOOGLE_GENAI_USE_VERTEXAI=False"
+
+[Install]
+WantedBy=multi-user.target

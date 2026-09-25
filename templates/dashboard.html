@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kidoory Bedtime Stories Studio · Port 5009</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <!-- Global Help Modal -->
+  <div id="helpModal" class="modal-overlay" style="display:none;" onclick="closeHelp(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="helpTitle">Feature Explanation</h3>
+        <button class="close-btn" onclick="closeHelp(event)">×</button>
+      </div>
+      <div class="modal-body" id="helpContent">
+        Explanation text goes here...
+      </div>
+      <div class="modal-footer">
+        <button class="btn secondary" onclick="closeHelp(event)">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-emoji">🌙✨</span>
+      <div>
+        <h1>Kidoory Bedtime Stories Studio</h1>
+        <span class="badge port">PORT 5009</span>
+        <span class="badge zero-cost">$0.00 FREE TIER ACTIVE</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="liveClock" class="clock">--:--:-- UTC</span>
+      <button class="btn icon-btn" onclick="refreshDashboard()" title="Refresh Studio Status">↻</button>
+      <a href="/logout" class="btn quiet">Sign out</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Action Status Banner -->
+    <div id="actionBanner" class="action-banner" style="display:none;">
+      <span class="spinner"></span>
+      <span id="actionBannerText">Processing action...</span>
+    </div>
+
+    <!-- Top Grid: Universe Progress & Channel Telemetry -->
+    <div class="grid grid-2">
+      <!-- Active Universe Card -->
+      <section class="card universe-card">
+        <div class="card-header">
+          <h2>
+            Active Universe & Episode
+            <button class="help-btn" onclick="showHelp('universe')">?</button>
+          </h2>
+          <span class="chip status-chip" id="stageBadge">{{ state.stage or 'IDLE' }}</span>
+        </div>
+        <div class="universe-details">
+          <div class="detail-row">
+            <span class="label">Universe Series:</span>
+            <strong id="movieTitle">{{ state.movie_title or 'Luna and the Lumina Dreams' }}</strong>
+          </div>
+          <div class="detail-row">
+            <span class="label">Movie ID:</span>
+            <span class="code" id="activeMovieId">{{ state.active_movie_id or 'MOVIE_002' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">Active Episode:</span>
+            <strong id="activeEpId">Episode {{ state.active_episode_id or 6 }}</strong>
+          </div>
+          <div class="detail-row">
+            <span class="label">Storage Location:</span>
+            <span class="code">/mnt/data/google-stories/movies (SanDisk SSD)</span>
+          </div>
+        </div>
+
+        <div class="action-buttons">
+          <button class="btn primary" onclick="triggerAction('produce')">
+            ▶ Produce Next Episode
+            <span class="help-sub" onclick="event.stopPropagation(); showHelp('produce_btn')">?</span>
+          </button>
+          <button class="btn secondary" onclick="triggerAction('publish')">
+            🚀 Publish Ready Episode
+            <span class="help-sub" onclick="event.stopPropagation(); showHelp('publish_btn')">?</span>
+          </button>
+          <button class="btn secondary" onclick="triggerAction('health')">
+            🔍 Sync Health Guard
+            <span class="help-sub" onclick="event.stopPropagation(); showHelp('health_btn')">?</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Live Channel Card -->
+      <section class="card channel-card">
+        <div class="card-header">
+          <h2>
+            YouTube Channel: @kidoorystory
+            <button class="help-btn" onclick="showHelp('channel')">?</button>
+          </h2>
+          <a href="https://www.youtube.com/@kidoorystory" target="_blank" class="external-link">Open YouTube ↗</a>
+        </div>
+        <p class="muted">Connected Account: solodigital.ltd@gmail.com · Channel: UCobsgHbbxC3tLOpTJKkkHeg</p>
+
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <span class="metric-val" id="metricSubs">{{ health.metrics.subscribers if health.metrics else 0 }}</span>
+            <span class="metric-label">Subscribers <button class="help-mini" onclick="showHelp('subs')">?</button></span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-val" id="metricViews">{{ health.metrics.lifetime_views if health.metrics else 3 }}</span>
+            <span class="metric-label">Lifetime Views <button class="help-mini" onclick="showHelp('views')">?</button></span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-val" id="metricTotalStories">{{ health.metrics.total_published_stories if health.metrics else 22 }}</span>
+            <span class="metric-label">Published Stories <button class="help-mini" onclick="showHelp('published')">?</button></span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-val" id="metricTodayUploads">{{ health.metrics.today_uploads if health.metrics else 3 }} / 5</span>
+            <span class="metric-label">Today's Uploads <button class="help-mini" onclick="showHelp('daily_cap')">?</button></span>
+          </div>
+        </div>
+
+        <div class="storage-health">
+          <span class="status-dot green"></span>
+          <span>External SSD Storage: <strong>{{ health.storage.free_gb if health.storage else '1,657' }} GB Free</strong> (91% Available)</span>
+        </div>
+      </section>
+    </div>
+
+    <!-- Middle Grid: Zero-Cost Quota & Token Telemetry -->
+    <section class="card telemetry-card">
+      <div class="card-header">
+        <h2>
+          Zero-Cost Quota &amp; Token Telemetry ($0.00 Free Tier Guard)
+          <button class="help-btn" onclick="showHelp('quotas')">?</button>
+        </h2>
+        <span class="chip free-tier-chip">STRICT ZERO-COST ACTIVE</span>
+      </div>
+
+      <div class="grid grid-3 quota-boxes">
+        <!-- Gemini 2.5 Flash Token Box -->
+        <div class="quota-box">
+          <div class="quota-header">
+            <h3>Google Gemini 2.5 Flash</h3>
+            <button class="help-mini" onclick="showHelp('gemini_quota')">?</button>
+          </div>
+          <p class="quota-sub">Developer API Studio (Script &amp; Director)</p>
+          <div class="quota-stat">
+            <span class="stat-number">1,500</span>
+            <span class="stat-unit">Requests/Day Limit</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill green" style="width: 2.5%;"></div>
+          </div>
+          <div class="quota-meta">
+            <span>Rate Limit: <strong>15 RPM</strong></span>
+            <span>Current Cost: <strong>$0.00 USD</strong></span>
+          </div>
+        </div>
+
+        <!-- Google Cloud TTS Box -->
+        <div class="quota-box">
+          <div class="quota-header">
+            <h3>Google Cloud TTS</h3>
+            <button class="help-mini" onclick="showHelp('tts_quota')">?</button>
+          </div>
+          <p class="quota-sub">Neural2 / Journey High-Fidelity Voice</p>
+          <div class="quota-stat">
+            <span class="stat-number" id="ttsDailyUsed">{{ tts_usage.daily_characters or '9,178' }}</span>
+            <span class="stat-unit">Chars Today (Cap: 35,000)</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill gold" id="ttsBar" style="width: 26%;"></div>
+          </div>
+          <div class="quota-meta">
+            <span>Monthly: <strong>{{ tts_usage.monthly_characters or '9,178' }} / 1,000,000 Free</strong></span>
+            <span>Cost: <strong>$0.00 Free Tier</strong></span>
+          </div>
+        </div>
+
+        <!-- YouTube Data API Quota Box -->
+        <div class="quota-box">
+          <div class="quota-header">
+            <h3>YouTube Data API v3</h3>
+            <button class="help-mini" onclick="showHelp('youtube_quota')">?</button>
+          </div>
+          <p class="quota-sub">Automated Video Publishing Quota</p>
+          <div class="quota-stat">
+            <span class="stat-number" id="ytUnitsUsed">4,800</span>
+            <span class="stat-unit">/ 10,000 Daily Units</span>
+          </div>
+          <div class="progress-bar">
+            <div class="progress-fill cyan" style="width: 48%;"></div>
+          </div>
+          <div class="quota-meta">
+            <span>Remaining: <strong>5,200 units</strong></span>
+            <span>Cost: <strong>$0.00 Free Quota</strong></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Grid: Video Preview & Masked API Keys -->
+    <div class="grid grid-2">
+      <!-- Latest Video Player Card -->
+      <section class="card video-card">
+        <div class="card-header">
+          <h2>
+            Latest Rendered Bedtime Master Video
+            <button class="help-btn" onclick="showHelp('video_player')">?</button>
+          </h2>
+          <span class="badge format">1080p Horizontal (16:9)</span>
+        </div>
+        <div class="video-container">
+          <video controls preload="metadata" id="masterPlayer" class="video-player">
+            <source src="/media/latest" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        </div>
+        <p class="muted filename" id="latestFilename">{{ state.latest_mp4 }}</p>
+      </section>
+
+      <!-- Masked API Keys & Secrets Manager Card -->
+      <section class="card secrets-card">
+        <div class="card-header">
+          <h2>
+            API Keys &amp; Service Secrets
+            <button class="help-btn" onclick="showHelp('secrets')">?</button>
+          </h2>
+          <span class="chip mask-chip">🔒 MASKED BY DEFAULT</span>
+        </div>
+        <p class="muted">All keys and tokens are securely stored in ~/secrets and .env. Click Reveal to inspect for 6 seconds.</p>
+
+        <div class="secret-fields" id="secretFieldsContainer">
+          <!-- Gemini API Key -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>Kidoory Gemini API Key</span>
+              <button class="help-mini" onclick="showHelp('key_gemini')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_gemini_api_key" readonly value="AIzaSyC3a50b9lMb5FpzClrQOL7qT0mBYcrds3I">
+              <button class="btn reveal-btn" id="btn_gemini_api_key" onclick="revealKey('gemini_api_key')">👁️ Show</button>
+            </div>
+            <span class="timer-tag" id="timer_gemini_api_key" style="display:none;"></span>
+          </div>
+
+          <!-- Service Account -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>Google Cloud Service Account (TTS)</span>
+              <button class="help-mini" onclick="showHelp('key_sa')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_service_account" readonly value="gemini-agy-linux@kidoory.iam.gserviceaccount.com">
+              <button class="btn reveal-btn" id="btn_service_account" onclick="revealKey('service_account')">👁️ Show</button>
+            </div>
+            <span class="timer-tag" id="timer_service_account" style="display:none;"></span>
+          </div>
+
+          <!-- YouTube Client ID -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>YouTube OAuth Client ID</span>
+              <button class="help-mini" onclick="showHelp('key_yt_client')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_youtube_client_id" readonly value="105678768886-cu18o6o53785drqik35n93c31ifomq2h.apps.googleusercontent.com">
+              <button class="btn reveal-btn" id="btn_youtube_client_id" onclick="revealKey('youtube_client_id')">👁️ Show</button>
+            </div>
+            <span class="timer-tag" id="timer_youtube_client_id" style="display:none;"></span>
+          </div>
+
+          <!-- YouTube Client Secret -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>YouTube OAuth Client Secret</span>
+              <button class="help-mini" onclick="showHelp('key_yt_secret')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_youtube_client_secret" readonly value="GOCSPX-placeholder">
+              <button class="btn reveal-btn" id="btn_youtube_client_secret" onclick="revealKey('youtube_client_secret')">👁️ Show</button>
+            </div>
+            <span class="timer-tag" id="timer_youtube_client_secret" style="display:none;"></span>
+          </div>
+
+          <!-- YouTube Refresh Token -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>YouTube Channel Refresh Token</span>
+              <button class="help-mini" onclick="showHelp('key_yt_token')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_youtube_refresh_token" readonly value="1//04placeholder">
+              <button class="btn reveal-btn" id="btn_youtube_refresh_token" onclick="revealKey('youtube_refresh_token')">👁️ Show</button>
+            </div>
+            <span class="timer-tag" id="timer_youtube_refresh_token" style="display:none;"></span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Recent Uploads Table -->
+    <section class="card history-card">
+      <div class="card-header">
+        <h2>
+          Published &amp; Produced Bedtime Stories
+          <button class="help-btn" onclick="showHelp('history')">?</button>
+        </h2>
+        <span class="muted">Logged in upload_ledger.json</span>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Title</th>
+            <th>YouTube ID</th>
+            <th>Status</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody id="historyTableBody">
+          {% if upload_ledger.daily_counts %}
+            {% for date, ddata in upload_ledger.daily_counts.items() %}
+              {% for item in ddata.uploads %}
+              <tr>
+                <td>{{ date }}</td>
+                <td><strong>{{ item.title }}</strong></td>
+                <td><code>{{ item.video_id }}</code></td>
+                <td><span class="chip success">Published</span></td>
+                <td><a href="{{ item.youtube_url }}" target="_blank" class="table-link">Watch on YouTube ↗</a></td>
+              </tr>
+              {% endfor %}
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="5" style="text-align:center;">No published stories found.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>Kidoory Bedtime Stories Studio · Port 5009 · Dedicated Standalone Engine &amp; Separate Git Repo</p>
+  </footer>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

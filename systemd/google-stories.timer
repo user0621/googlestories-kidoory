@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Trigger for Autonomous Story Production Pipeline
+Requires=google-stories.service
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

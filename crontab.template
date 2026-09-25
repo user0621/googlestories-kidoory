@@ -1,0 +1,9 @@
+# ==============================================================================
+# Autonomous Hourly Story Production Pipeline - Crontab Entry Template
+# ==============================================================================
+# Runs at the top of every hour (00:00, 01:00, 02:00, ...)
+# Automatically generates an original story idea, script, audio, visuals,
+# compiles 1080p master video to SanDisk drive, verifies QC, and logs history.
+# Halts automatically if SanDisk has < 20 GB free.
+
+0 * * * * /home/hkserver/google-stories/venv/bin/python /home/hkserver/google-stories/autonomous_daemon.py --once >> /data/google-stories/cron_production.log 2>&1

@@ -1,0 +1,15 @@
+.env
+.venv
+venv/
+__pycache__/
+*.pyc
+*.mp4
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+secrets/
+tokens/
+*.log
+.pytest_cache/
