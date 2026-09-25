@@ -28,6 +28,11 @@ HEALTH_FILE = DATA_DIR / "kidoory_health.json"
 TTS_USAGE_FILE = DATA_DIR / "tts_usage.json"
 UPLOAD_LEDGER_FILE = DATA_DIR / "upload_ledger.json"
 
+app = FastAPI(
+    title="Kidoory Bedtime Stories Studio",
+    description="Autonomous Bedtime Stories Engine for @kidoorystory"
+)
+
 @app.get("/favicon.ico")
 async def favicon():
     return Response(status_code=204)
