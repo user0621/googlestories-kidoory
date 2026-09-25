@@ -550,7 +550,10 @@ def record_upload_success(
     video_id: str,
     youtube_url: str,
     video_path: str,
-    ledger_path: str = DEFAULT_UPLOAD_LEDGER
+    ledger_path: str = DEFAULT_UPLOAD_LEDGER,
+    movie_id: Optional[str] = None,
+    episode_id: Optional[int] = None,
+    playlist_id: Optional[str] = None
 ) -> int:
     """Records a successful upload into the ledger under today's date."""
     today_str = get_today_str()
@@ -564,14 +567,27 @@ def record_upload_success(
         }
 
     day_record = ledger["daily_counts"][today_str]
+    for item in day_record["uploads"]:
+        if item.get("video_id") == video_id:
+            if movie_id: item["movie_id"] = movie_id
+            if episode_id: item["episode_id"] = episode_id
+            if playlist_id: item["playlist_id"] = playlist_id
+            save_upload_ledger(ledger_path, ledger)
+            return day_record["count"]
+
     day_record["count"] += 1
-    day_record["uploads"].append({
+    upload_item = {
         "title": title,
         "video_id": video_id,
         "youtube_url": youtube_url,
         "published_at": datetime.now(timezone.utc).isoformat(),
         "video_path": video_path
-    })
+    }
+    if movie_id: upload_item["movie_id"] = movie_id
+    if episode_id: upload_item["episode_id"] = episode_id
+    if playlist_id: upload_item["playlist_id"] = playlist_id
+
+    day_record["uploads"].append(upload_item)
     save_upload_ledger(ledger_path, ledger)
     logger.info(f"Upload ledger updated: {day_record['count']}/{DAILY_UPLOAD_CAP} uploads used for {today_str}.")
     return day_record["count"]
@@ -719,6 +735,326 @@ def get_live_channel_videos(youtube) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error fetching live channel videos: {e}")
         return []
+
+
+DEFAULT_PLAYLISTS_FILE = "/data/google-stories/playlists.json"
+DEFAULT_PENDING_PLAYLISTS_FILE = "/data/google-stories/pending_playlist_items.json"
+
+
+def extract_episode_num(text: str) -> Optional[int]:
+    """Extract episode integer from text (e.g. 'Ep. 1', 'Episode 1', 'Ep 1')."""
+    if not text:
+        return None
+    m = re.search(r'\b(?:ep|episode)[\.\s]*(\d+)\b', text, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def is_duplicate_episode(
+    target_title: str,
+    target_ep: Optional[int],
+    live_title: str
+) -> bool:
+    """Robust duplicate detector specifically tuned for series episodes and standalone bedtime stories."""
+    if not target_title or not live_title:
+        return False
+
+    n_live = normalize_title(live_title)
+    n_target = normalize_title(target_title)
+
+    if n_live == n_target or (len(n_live) > 8 and (n_live in n_target or n_target in n_live)):
+        return True
+
+    live_ep = extract_episode_num(live_title)
+    target_ep_val = target_ep if target_ep is not None else extract_episode_num(target_title)
+
+    if target_ep_val is not None and live_ep is not None and target_ep_val == live_ep:
+        # Same episode number! Check content similarity
+        words_live = set(n_live.split())
+        words_target = set(n_target.split())
+        stopwords = {'the', 'a', 'an', 'and', 'of', 'in', 'to', 'for', 'on', 'with', 'ep', 'episode'}
+        w_live = words_live - stopwords
+        w_target = words_target - stopwords
+        if w_live and w_target:
+            overlap = w_live.intersection(w_target)
+            if len(overlap) >= min(len(w_live), len(w_target)) * 0.4:
+                return True
+
+    return False
+
+
+def check_channel_for_duplicate(
+    youtube,
+    target_title: str,
+    episode_num: Optional[int] = None,
+    movie_id: Optional[str] = None,
+    video_path: Optional[str] = None,
+    ledger_path: str = DEFAULT_UPLOAD_LEDGER
+) -> Optional[Dict[str, Any]]:
+    """
+    Checks if a video is already present either in upload_ledger.json or on the live YouTube channel.
+    Returns dict with video details if duplicate, or None if unique.
+    """
+    # 1. Check upload ledger first
+    try:
+        ledger = load_upload_ledger(ledger_path)
+        for date_key, ddata in ledger.get("daily_counts", {}).items():
+            for item in ddata.get("uploads", []):
+                # Path match
+                if video_path and item.get("video_path") and os.path.abspath(item["video_path"]) == os.path.abspath(video_path):
+                    return {
+                        "duplicate": True,
+                        "source": "ledger_path_match",
+                        "video_id": item["video_id"],
+                        "youtube_url": item.get("youtube_url", f"https://youtu.be/{item['video_id']}"),
+                        "title": item.get("title", ""),
+                        "published_at": item.get("published_at", "")
+                    }
+                # Movie & Episode ID match
+                if movie_id and episode_num and item.get("movie_id") == movie_id and item.get("episode_id") == episode_num:
+                    return {
+                        "duplicate": True,
+                        "source": "ledger_episode_match",
+                        "video_id": item["video_id"],
+                        "youtube_url": item.get("youtube_url", f"https://youtu.be/{item['video_id']}"),
+                        "title": item.get("title", ""),
+                        "published_at": item.get("published_at", "")
+                    }
+                # Title match
+                if is_duplicate_episode(target_title, episode_num, item.get("title", "")):
+                    return {
+                        "duplicate": True,
+                        "source": "ledger_title_match",
+                        "video_id": item["video_id"],
+                        "youtube_url": item.get("youtube_url", f"https://youtu.be/{item['video_id']}"),
+                        "title": item.get("title", ""),
+                        "published_at": item.get("published_at", "")
+                    }
+    except Exception as e:
+        logger.warning(f"Error checking ledger for duplicates: {e}")
+
+    # 2. Check live YouTube channel
+    if youtube:
+        try:
+            live_videos = get_live_channel_videos(youtube)
+            for v in live_videos:
+                if is_duplicate_episode(target_title, episode_num, v.get("title", "")):
+                    return {
+                        "duplicate": True,
+                        "source": "youtube_channel_scan",
+                        "video_id": v["video_id"],
+                        "youtube_url": f"https://youtu.be/{v['video_id']}",
+                        "title": v.get("title", ""),
+                        "published_at": v.get("published_at", "")
+                    }
+        except Exception as e:
+            logger.warning(f"Error scanning live channel for duplicates: {e}")
+
+    return None
+
+
+def load_playlists_registry(path: str = DEFAULT_PLAYLISTS_FILE) -> Dict[str, Any]:
+    """Load the JSON mapping of Movie IDs to YouTube Playlist IDs."""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_playlists_registry(path: str, data: Dict[str, Any]) -> None:
+    """Save the JSON mapping of Movie IDs to YouTube Playlist IDs atomically."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def get_or_create_movie_playlist(
+    youtube,
+    movie_id: str,
+    movie_title: str,
+    playlists_path: str = DEFAULT_PLAYLISTS_FILE
+) -> Optional[str]:
+    """
+    Retrieves the YouTube playlist ID for a given movie series.
+    If not already registered, checks live playlists on the channel.
+    If not on the channel, creates a new playlist for the movie series.
+    """
+    registry = load_playlists_registry(playlists_path)
+    if movie_id in registry and registry[movie_id].get("playlist_id"):
+        return registry[movie_id]["playlist_id"]
+
+    # Search channel playlists
+    pl_title = f"{movie_title} 🌙 | Kidoory Bedtime Stories"
+    try:
+        pl_resp = youtube.playlists().list(part="snippet,contentDetails", mine=True, maxResults=50).execute()
+        for pl in pl_resp.get("items", []):
+            title = pl.get("snippet", {}).get("title", "")
+            if (movie_title.lower() in title.lower()) or ("luna blossom" in title.lower() and movie_id == "MOVIE_001"):
+                pl_id = pl["id"]
+                registry[movie_id] = {
+                    "playlist_id": pl_id,
+                    "title": title,
+                    "channel_id": pl.get("snippet", {}).get("channelId", ""),
+                    "created_at": pl.get("snippet", {}).get("publishedAt", "")
+                }
+                save_playlists_registry(playlists_path, registry)
+                return pl_id
+    except Exception as e:
+        logger.warning(f"Could not list channel playlists ({e}).")
+
+    # Try creating new playlist
+    try:
+        logger.info(f"Creating new YouTube playlist: '{pl_title}'...")
+        new_pl = youtube.playlists().insert(
+            part="snippet,status",
+            body={
+                "snippet": {
+                    "title": pl_title,
+                    "description": f"All episodes of {movie_title}. Calming, cinematic bedtime stories for children.\n\n🌐 https://kidoory.com\n#Kidoory #BedtimeStories"
+                },
+                "status": {"privacyStatus": "public"}
+            }
+        ).execute()
+        pl_id = new_pl.get("id")
+        registry[movie_id] = {
+            "playlist_id": pl_id,
+            "title": pl_title,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        save_playlists_registry(playlists_path, registry)
+        logger.info(f"Successfully created playlist {pl_id} for {movie_id}!")
+        return pl_id
+    except Exception as e:
+        logger.warning(f"Could not create playlist for {movie_id} ({e}).")
+        return None
+
+
+def record_pending_playlist_item(
+    playlist_id: str,
+    video_id: str,
+    movie_id: Optional[str] = None,
+    episode_id: Optional[int] = None
+):
+    """Queues a video to be added to a playlist once permissions/token are re-consented."""
+    p_file = DEFAULT_PENDING_PLAYLISTS_FILE
+    items = []
+    if os.path.exists(p_file):
+        try:
+            with open(p_file, "r", encoding="utf-8") as f:
+                items = json.load(f)
+        except Exception:
+            items = []
+    for it in items:
+        if it.get("playlist_id") == playlist_id and it.get("video_id") == video_id:
+            return
+    items.append({
+        "playlist_id": playlist_id,
+        "video_id": video_id,
+        "movie_id": movie_id,
+        "episode_id": episode_id,
+        "queued_at": datetime.now(timezone.utc).isoformat()
+    })
+    os.makedirs(os.path.dirname(os.path.abspath(p_file)), exist_ok=True)
+    tmp = f"{p_file}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2)
+    os.replace(tmp, p_file)
+
+
+def add_video_to_playlist(
+    youtube,
+    playlist_id: str,
+    video_id: str,
+    movie_id: Optional[str] = None,
+    episode_id: Optional[int] = None
+) -> bool:
+    """
+    Safely adds a video to a YouTube playlist, checking for duplicates first.
+    If scope lacks permission, queues it in pending_playlist_items.json without crashing.
+    """
+    if not playlist_id or not video_id:
+        return False
+
+    try:
+        items_resp = youtube.playlistItems().list(
+            part="snippet",
+            playlistId=playlist_id,
+            maxResults=50
+        ).execute()
+        for it in items_resp.get("items", []):
+            if it.get("snippet", {}).get("resourceId", {}).get("videoId") == video_id:
+                logger.info(f"Video {video_id} is already in playlist {playlist_id}.")
+                return True
+
+        logger.info(f"Adding video {video_id} to playlist {playlist_id}...")
+        youtube.playlistItems().insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "playlistId": playlist_id,
+                    "resourceId": {
+                        "kind": "youtube#video",
+                        "videoId": video_id
+                    }
+                }
+            }
+        ).execute()
+        logger.info(f"Successfully added video {video_id} to playlist {playlist_id}!")
+        return True
+    except HttpError as e:
+        if e.resp.status in (401, 403):
+            logger.warning(f"Playlist insert restricted ({e.reason}). Queuing for pending playlist sync.")
+            record_pending_playlist_item(playlist_id, video_id, movie_id, episode_id)
+        else:
+            logger.warning(f"Error adding video to playlist: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"Unexpected error adding video to playlist: {e}")
+        record_pending_playlist_item(playlist_id, video_id, movie_id, episode_id)
+        return False
+
+
+def sync_pending_playlist_items(youtube) -> int:
+    """Attempts to sync any pending playlist items."""
+    p_file = DEFAULT_PENDING_PLAYLISTS_FILE
+    if not os.path.exists(p_file):
+        return 0
+    try:
+        with open(p_file, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except Exception:
+        return 0
+
+    if not items:
+        return 0
+
+    remaining = []
+    synced = 0
+    for it in items:
+        pl_id = it.get("playlist_id")
+        v_id = it.get("video_id")
+        try:
+            youtube.playlistItems().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "playlistId": pl_id,
+                        "resourceId": {"kind": "youtube#video", "videoId": v_id}
+                    }
+                }
+            ).execute()
+            synced += 1
+            logger.info(f"Synced pending video {v_id} into playlist {pl_id}.")
+        except Exception:
+            remaining.append(it)
+
+    with open(p_file, "w", encoding="utf-8") as f:
+        json.dump(remaining, f, indent=2)
+    return synced
 
 
 def sync_with_live_youtube(
@@ -1425,11 +1761,14 @@ def publish_story_to_kidoory(
     secrets_file: str = DEDICATED_CLIENT_SECRETS,
     token_file: str = DEDICATED_TOKEN_FILE,
     ledger_path: str = DEFAULT_UPLOAD_LEDGER,
+    movie_id: Optional[str] = None,
+    episode_id: Optional[int] = None,
+    playlist_id: Optional[str] = None,
     force: bool = False
 ) -> Optional[str]:
     """
-    Publish master video to Kidoory YouTube channel with chapters and rich SEO metadata.
-    Enforces 'selfDeclaredMadeForKids': False.
+    Publish master video to Kidoory YouTube channel with chapters, playlist grouping,
+    and duplicate protection.
     Checks daily upload cap via upload_ledger.json.
     Returns: live YouTube URL (https://youtu.be/<VIDEO_ID>) or None if cap reached.
     """
@@ -1453,7 +1792,39 @@ def publish_story_to_kidoory(
     # 2. Compile Metadata & Chapters
     logger.info("Generating YouTube chapters and SEO metadata...")
     meta = generate_video_metadata(metadata_json_path)
+    story_title = meta.get("title", os.path.basename(video_path))
 
+    # 3. Duplicate Shield Protection: Check live channel and ledger
+    dup = check_channel_for_duplicate(
+        youtube=youtube,
+        target_title=story_title,
+        episode_num=episode_id,
+        movie_id=movie_id,
+        video_path=video_path,
+        ledger_path=ledger_path
+    )
+    if dup:
+        logger.info(f"[DUPLICATE SHIELD] Video '{story_title}' already exists on YouTube ({dup['video_id']}). Skipping re-upload.")
+        # Ensure playlist mapping
+        if not playlist_id and movie_id:
+            movie_title = meta.get("theme") or (movie_id.replace("_", " "))
+            playlist_id = get_or_create_movie_playlist(youtube, movie_id, movie_title)
+        if playlist_id:
+            add_video_to_playlist(youtube, playlist_id, dup["video_id"], movie_id, episode_id)
+        # Record/ensure ledger entry
+        record_upload_success(
+            title=dup.get("title") or story_title,
+            video_id=dup["video_id"],
+            youtube_url=dup["youtube_url"],
+            video_path=video_path,
+            ledger_path=ledger_path,
+            movie_id=movie_id,
+            episode_id=episode_id,
+            playlist_id=playlist_id
+        )
+        return dup["youtube_url"]
+
+    # 4. Prepare YouTube upload body
     body = {
         "snippet": {
             "title": meta["title"][:100],
@@ -1465,13 +1836,13 @@ def publish_story_to_kidoory(
         },
         "status": {
             "privacyStatus": privacy_status,
-            "selfDeclaredMadeForKids": True,
+            "selfDeclaredMadeForKids": False,
             "embeddable": True,
             "license": "youtube"
         }
     }
 
-    # 3. Resumable Upload
+    # 5. Resumable Upload
     file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
     logger.info(f"Starting chunked upload of {video_path} ({file_size_mb:.2f} MB) to YouTube...")
 
@@ -1511,22 +1882,31 @@ def publish_story_to_kidoory(
     logger.info(f"Video uploaded successfully! Video ID: {video_id}")
     logger.info(f"Live Video URL: {live_url}")
 
-    # 4. Upload Custom Thumbnail Artwork
+    # 6. Upload Custom Thumbnail Artwork
     thumbnail_path = find_story_thumbnail(video_path, metadata_json_path)
     if thumbnail_path:
         upload_custom_thumbnail(youtube, video_id, thumbnail_path)
     else:
         logger.info(f"No custom thumbnail found for {video_path}; using YouTube default thumbnail.")
 
-    # Record in upload ledger
+    # 7. Add Video to Movie Playlist
+    if not playlist_id and movie_id:
+        movie_title = meta.get("theme") or (movie_id.replace("_", " "))
+        playlist_id = get_or_create_movie_playlist(youtube, movie_id, movie_title)
+    if playlist_id:
+        add_video_to_playlist(youtube, playlist_id, video_id, movie_id, episode_id)
+
+    # 8. Record in upload ledger
     try:
-        story_title = meta.get("title", os.path.basename(video_path))
         record_upload_success(
             title=story_title,
             video_id=video_id,
             youtube_url=live_url,
             video_path=video_path,
-            ledger_path=ledger_path
+            ledger_path=ledger_path,
+            movie_id=movie_id,
+            episode_id=episode_id,
+            playlist_id=playlist_id
         )
     except Exception as e:
         logger.warning(f"Could not record upload in ledger: {e}")

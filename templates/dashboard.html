@@ -23,6 +23,32 @@
     </div>
   </div>
 
+  <!-- OAuth Scope & Playlist Upgrade Modal -->
+  <div id="oauthModal" class="modal-overlay" style="display:none;" onclick="closeOAuthModal(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>YouTube Playlist OAuth Permission Upgrade</h3>
+        <button class="close-btn" onclick="closeOAuthModal(event)">×</button>
+      </div>
+      <div class="modal-body">
+        <p>Grant full YouTube playlist management permissions so Kidoory can automatically add bedtime videos directly into your movie series playlists on channel <strong>@kidoorystory</strong>.</p>
+        <div style="margin: 16px 0;">
+          <a href="#" id="oauthLinkBtn" target="_blank" class="btn primary" style="display:inline-block; text-decoration:none;">
+            👉 Step 1: Open Google Consent Screen (solodigital.ltd@gmail.com)
+          </a>
+        </div>
+        <p class="muted" style="font-size:0.85rem;">Step 2: Sign in and approve access. You will be redirected to localhost with a code in the address bar. Paste the code or the entire URL below:</p>
+        <div style="margin-top: 10px;">
+          <input type="text" id="oauthCodeInput" placeholder="Paste code=4/0A... or http://localhost:8080/?code=..." style="width:100%; padding:10px; border-radius:6px; border:1px solid var(--border); background:var(--bg-input); color:var(--text-main); font-family:ui-monospace, monospace; font-size:0.85rem;">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn secondary" onclick="closeOAuthModal(event)">Cancel</button>
+        <button class="btn primary" id="btnSubmitCode" onclick="submitAuthCode()">Submit &amp; Sync Playlists</button>
+      </div>
+    </div>
+  </div>
+
   <header class="topbar">
     <div class="brand">
       <span class="logo-emoji">🌙✨</span>
@@ -128,6 +154,97 @@
         </div>
       </section>
     </div>
+
+    <!-- Dedicated Movie Episodes & Playlist Publishing Queue Card -->
+    <section class="card episodes-card" id="episodesCard">
+      <div class="card-header">
+        <div class="header-left">
+          <h2>
+            🎬 Movie Universes &amp; Episode Publishing Queue
+            <button class="help-btn" onclick="showHelp('episodes_queue')">?</button>
+          </h2>
+          <span class="muted subtitle">Rendered on SanDisk SSD · Automatic Playlist Grouping &amp; Duplicate Shield</span>
+        </div>
+        <div class="movie-tabs" id="movieTabsContainer">
+          {% for m in movies_data %}
+          <button class="tab-btn {% if loop.first %}active{% endif %}" id="tab_btn_{{ m.movie_id }}" onclick="switchMovieTab('{{ m.movie_id }}')">
+            {{ m.movie_id }}: {{ m.movie_title }} ({{ m.total_rendered }} Ep)
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% for m in movies_data %}
+      <div class="movie-episodes-panel" id="panel_{{ m.movie_id }}" style="{% if not loop.first %}display:none;{% endif %}">
+        <div class="playlist-bar">
+          <div class="playlist-meta">
+            <span class="playlist-icon">📺</span>
+            <div>
+              <strong>Series YouTube Playlist:</strong>
+              {% if m.playlist_id %}
+                <span class="playlist-title">{{ m.movie_title }} 🌙</span>
+                <span class="code">{{ m.playlist_id }}</span>
+                <a href="{{ m.playlist_url }}" target="_blank" class="table-link playlist-link">View Playlist on YouTube ↗</a>
+              {% else %}
+                <span class="muted" style="margin-left: 8px;">Will be automatically created on YouTube upon publishing first episode</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="playlist-stats">
+            <span class="badge zero-cost">{{ m.published_count }} / {{ m.total_rendered }} Episodes Published</span>
+            <button class="help-mini" onclick="showHelp('playlist_info')">?</button>
+          </div>
+        </div>
+
+        <div class="episodes-table-wrapper">
+          <table class="data-table episodes-table">
+            <thead>
+              <tr>
+                <th style="width: 70px;">Ep #</th>
+                <th>Episode Title &amp; Story Theme</th>
+                <th style="width: 100px;">Size</th>
+                <th style="width: 160px;">Status</th>
+                <th style="width: 220px; text-align: right;">Manual Publishing Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ep in m.episodes %}
+              <tr id="row_{{ m.movie_id }}_{{ ep.episode_id }}">
+                <td><span class="ep-badge">Ep. {{ ep.episode_id }}</span></td>
+                <td>
+                  <div class="ep-title-box">
+                    <strong>{{ ep.title }}</strong>
+                    <span class="muted ep-filename">{{ ep.filename }}</span>
+                  </div>
+                </td>
+                <td><span class="size-tag">{{ ep.size_mb }} MB</span></td>
+                <td id="status_cell_{{ m.movie_id }}_{{ ep.episode_id }}">
+                  {% if ep.is_published %}
+                    <span class="chip success">✅ Published</span>
+                  {% else %}
+                    <span class="chip ready">🟢 Ready to Post</span>
+                  {% endif %}
+                </td>
+                <td style="text-align: right;" id="action_cell_{{ m.movie_id }}_{{ ep.episode_id }}">
+                  {% if ep.is_published %}
+                    <a href="{{ ep.youtube_url }}" target="_blank" class="btn quiet ext-btn">
+                      ▶ Watch Video ↗
+                    </a>
+                  {% else %}
+                    <button class="btn post-yt-btn" id="btn_post_{{ m.movie_id }}_{{ ep.episode_id }}" onclick="postEpisode('{{ m.movie_id }}', {{ ep.episode_id }})">
+                      🚀 Post to YouTube
+                      <span class="help-sub" onclick="event.stopPropagation(); showHelp('post_youtube_btn')">?</span>
+                    </button>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endfor %}
+    </section>
 
     <!-- Middle Grid: Zero-Cost Quota & Token Telemetry -->
     <section class="card telemetry-card">
@@ -297,6 +414,19 @@
               <button class="btn reveal-btn" id="btn_youtube_refresh_token" onclick="revealKey('youtube_refresh_token')">👁️ Show</button>
             </div>
             <span class="timer-tag" id="timer_youtube_refresh_token" style="display:none;"></span>
+          </div>
+
+          <!-- YouTube Playlist OAuth Scopes & Permissions -->
+          <div class="secret-item oauth-scope-box">
+            <div class="secret-label">
+              <span>YouTube API Scopes &amp; Playlist Permissions</span>
+              <button class="help-mini" onclick="showHelp('oauth_upgrade')">?</button>
+            </div>
+            <div class="scope-row">
+              <span class="badge zero-cost">Video Uploads: Active</span>
+              <span class="badge format" id="playlistScopeBadge">Playlists: OAuth 2.0</span>
+              <button class="btn secondary mini-btn" onclick="openOAuthUpgradeModal()">🔗 Authorize Playlists</button>
+            </div>
           </div>
         </div>
       </section>

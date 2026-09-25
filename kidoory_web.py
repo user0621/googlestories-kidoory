@@ -1,17 +1,28 @@
 import os
+import re
+import glob
 import json
 import time
 import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, Request, Response, Depends, HTTPException, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import dotenv_values
+
+from movie_publisher import publish_movie_episode, find_movie_episode_files
+from youtube_publisher import (
+    exchange_code_for_token,
+    sync_pending_playlist_items,
+    authenticate_youtube,
+    SCOPES,
+    DEDICATED_CLIENT_SECRETS
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
@@ -27,6 +38,7 @@ STATE_FILE = BASE_DIR / "PROJECT_STATE.json"
 HEALTH_FILE = DATA_DIR / "kidoory_health.json"
 TTS_USAGE_FILE = DATA_DIR / "tts_usage.json"
 UPLOAD_LEDGER_FILE = DATA_DIR / "upload_ledger.json"
+PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 
 app = FastAPI(
     title="Kidoory Bedtime Stories Studio",
@@ -108,6 +120,85 @@ async def logout():
     return response
 
 
+def get_all_episodes_data() -> List[Dict[str, Any]]:
+    ledger = load_json_safe(UPLOAD_LEDGER_FILE)
+    playlists = load_json_safe(PLAYLISTS_FILE)
+
+    published_map = {}
+    for date_str, ddata in ledger.get("daily_counts", {}).items():
+        for item in ddata.get("uploads", []):
+            m_id = item.get("movie_id")
+            ep_id = item.get("episode_id")
+            if m_id and ep_id:
+                published_map[(m_id, int(ep_id))] = item
+            if item.get("video_path"):
+                published_map[os.path.basename(item["video_path"])] = item
+            if item.get("video_id") == "MsPp4P_tr5k":
+                published_map[("MOVIE_001", 1)] = item
+
+    movies_data = []
+    movie_dirs = sorted([d for d in MOVIES_DIR.glob("MOVIE_*") if d.is_dir()])
+    if not movie_dirs:
+        movie_dirs = [MOVIES_DIR / "MOVIE_001", MOVIES_DIR / "MOVIE_002"]
+
+    for m_dir in movie_dirs:
+        if not m_dir.exists():
+            continue
+        m_id = m_dir.name
+        struct = load_json_safe(m_dir / "bibles" / "MOVIE_STRUCTURE.json")
+        ep_map_list = load_json_safe(m_dir / "bibles" / "EPISODE_MAP.json") or []
+        ep_titles = {e.get("episode_id"): e.get("title") for e in ep_map_list if isinstance(e, dict)}
+        movie_title = struct.get("movie_title", m_id)
+        pl_info = playlists.get(m_id, {})
+        pl_id = pl_info.get("playlist_id")
+
+        mp4s = glob.glob(f"{m_dir}/**/*.mp4", recursive=True)
+        episodes = []
+        seen_eps = set()
+        for mp4 in sorted(mp4s):
+            if any(x in mp4 for x in ["temp_segments", "raw_images", "audio_scenes"]):
+                continue
+            base = os.path.basename(mp4)
+            m = re.search(r'[_\s]Ep\.?[_\s]*(\d+)', base, re.IGNORECASE)
+            ep_id = int(m.group(1)) if m else None
+            if not ep_id or ep_id in seen_eps:
+                continue
+            seen_eps.add(ep_id)
+
+            json_path = mp4[:-4] + ".json"
+            has_json = os.path.exists(json_path)
+            ep_title = ep_titles.get(ep_id, base.replace("_", " ").replace(".mp4", ""))
+
+            pub_info = published_map.get((m_id, ep_id)) or published_map.get(base)
+            is_published = bool(pub_info)
+
+            episodes.append({
+                "episode_id": ep_id,
+                "title": ep_title,
+                "filename": base,
+                "mp4_path": mp4,
+                "json_path": json_path if has_json else None,
+                "size_mb": round(os.path.getsize(mp4) / (1024 * 1024), 1),
+                "is_published": is_published,
+                "video_id": pub_info.get("video_id") if pub_info else None,
+                "youtube_url": pub_info.get("youtube_url") if pub_info else None,
+                "playlist_id": pl_id
+            })
+
+        episodes.sort(key=lambda x: x["episode_id"])
+        movies_data.append({
+            "movie_id": m_id,
+            "movie_title": movie_title,
+            "playlist_id": pl_id,
+            "playlist_url": f"https://www.youtube.com/playlist?list={pl_id}" if pl_id else None,
+            "total_rendered": len(episodes),
+            "published_count": sum(1 for e in episodes if e["is_published"]),
+            "episodes": episodes
+        })
+
+    return movies_data
+
+
 @app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def dashboard_index(request: Request):
     if not is_authenticated(request):
@@ -117,6 +208,7 @@ async def dashboard_index(request: Request):
     health = load_json_safe(HEALTH_FILE)
     tts_usage = load_json_safe(TTS_USAGE_FILE)
     upload_ledger = load_json_safe(UPLOAD_LEDGER_FILE)
+    movies_data = get_all_episodes_data()
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
@@ -124,6 +216,7 @@ async def dashboard_index(request: Request):
         "health": health,
         "tts_usage": tts_usage,
         "upload_ledger": upload_ledger,
+        "movies_data": movies_data,
         "running_action": current_running_action
     })
 
@@ -344,13 +437,122 @@ async def media_latest(request: Request):
 @app.get("/media/video/{path:path}")
 async def media_video(request: Request, path: str):
     require_auth(request)
-    # Check in movies or data dir
     candidate = MOVIES_DIR / path
     if not candidate.exists():
         candidate = DATA_DIR / path
     if candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate), media_type="video/mp4")
     raise HTTPException(status_code=404, detail="Video file not found")
+
+
+@app.get("/api/episodes")
+async def api_episodes(request: Request):
+    """Returns all discovered movies and episodes with rendered status and YouTube metadata."""
+    require_auth(request)
+    return {"status": "ok", "movies": get_all_episodes_data()}
+
+
+@app.post("/api/episodes/publish")
+async def api_publish_episode(request: Request, payload: dict):
+    """
+    Manually triggers publishing for an episode.
+    Reads companion JSON, checks channel for duplicates, uploads MP4 with custom thumbnail,
+    assigns video to series playlist, and logs to ledger.
+    """
+    require_auth(request)
+    movie_id = payload.get("movie_id")
+    episode_id = payload.get("episode_id")
+    mp4_path = payload.get("mp4_path")
+    json_path = payload.get("json_path")
+    privacy = payload.get("privacy", "public")
+    force = payload.get("force", False)
+
+    if not movie_id or episode_id is None:
+        raise HTTPException(status_code=400, detail="movie_id and episode_id are required")
+
+    try:
+        res = publish_movie_episode(
+            movie_id=movie_id,
+            episode_id=int(episode_id),
+            mp4_path=mp4_path,
+            json_path=json_path,
+            privacy_status=privacy,
+            force=force
+        )
+        return res
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/playlists")
+async def api_playlists(request: Request):
+    """Returns the current playlists registry and pending playlist sync items."""
+    require_auth(request)
+    playlists = load_json_safe(PLAYLISTS_FILE)
+    pending = load_json_safe(Path("/data/google-stories/pending_playlist_items.json"))
+    return {
+        "playlists": playlists,
+        "pending_items": pending if isinstance(pending, list) else []
+    }
+
+
+@app.get("/api/youtube/auth-url")
+async def api_youtube_auth_url(request: Request):
+    """Generates the Google OAuth authorization URL for YouTube playlist management."""
+    require_auth(request)
+    client_secret_path = Path(DEDICATED_CLIENT_SECRETS)
+    if not client_secret_path.exists():
+        raise HTTPException(status_code=404, detail="Client secrets file not found")
+
+    client_id = ""
+    with open(client_secret_path) as f:
+        cdata = json.load(f).get("installed", {})
+        client_id = cdata.get("client_id", "")
+
+    from urllib.parse import quote
+    scopes_str = quote(" ".join(SCOPES))
+    auth_url = (
+        f"https://accounts.google.com/o/oauth2/auth?"
+        f"client_id={client_id}&"
+        f"redirect_uri=http://localhost:8080/&"
+        f"scope={scopes_str}&"
+        f"response_type=code&"
+        f"access_type=offline&"
+        f"prompt=consent"
+    )
+    return {
+        "auth_url": auth_url,
+        "account": "solodigital.ltd@gmail.com",
+        "channel": "Kidoory (@kidoorystory)",
+        "scopes": SCOPES
+    }
+
+
+@app.post("/api/youtube/auth-code")
+async def api_youtube_auth_code(request: Request, payload: dict):
+    """Exchanges an authorization code or redirect URL to upgrade YouTube OAuth credentials."""
+    require_auth(request)
+    code_or_url = payload.get("code") or payload.get("code_or_url", "")
+    if not code_or_url:
+        raise HTTPException(status_code=400, detail="Authorization code or redirect URL is required")
+
+    creds = exchange_code_for_token(code_or_url)
+    if not creds:
+        raise HTTPException(status_code=400, detail="Failed to exchange authorization code with Google OAuth endpoint.")
+
+    # Authenticate and sync any pending playlist items
+    synced = 0
+    try:
+        from googleapiclient.discovery import build
+        yt = build("youtube", "v3", credentials=creds)
+        synced = sync_pending_playlist_items(yt)
+    except Exception as e:
+        pass
+
+    return {
+        "status": "ok",
+        "message": f"YouTube credentials upgraded with playlist permissions! Synced {synced} pending playlist items."
+    }
 
 
 if __name__ == "__main__":

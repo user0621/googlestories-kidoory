@@ -28,6 +28,17 @@ def produce_episode():
         logger.error(f"Episode {ep_id} not found in map.")
         return
         
+    # Check if this episode is already rendered on SSD
+    from movie_publisher import find_movie_episode_files
+    existing_mp4, _ = find_movie_episode_files(movie_id, ep_id)
+    if existing_mp4 and os.path.exists(existing_mp4):
+        logger.info(f"Episode {ep_id} of {movie_id} is already rendered on SSD: {existing_mp4}")
+        state["stage"] = "QC_AUDIT"
+        state["latest_mp4"] = existing_mp4
+        with open("/home/hkserver/googlestories-kidoory/PROJECT_STATE.json", "w") as f:
+            json.dump(state, f, indent=2)
+        return
+
     title = f"{ep_data['title']} | Ep. {ep_id} - {movie_struct.get('movie_title')} | Kidoory Bedtime Stories"
     theme = ep_data["summary"]
     
