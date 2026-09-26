@@ -336,13 +336,16 @@ def exchange_code_for_token(
         return None
 
     tokens = token_resp.json()
+    # Use the scopes Google ACTUALLY granted (from the response), not the ones we requested,
+    # so callers can detect when the user did not tick the playlist-management box.
+    granted_scopes = tokens.get("scope", "").split() if tokens.get("scope") else SCOPES
     creds = Credentials(
         token=tokens.get("access_token"),
         refresh_token=tokens.get("refresh_token"),
         token_uri="https://oauth2.googleapis.com/token",
         client_id=client_id,
         client_secret=client_secret,
-        scopes=SCOPES
+        scopes=granted_scopes
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(token_file)), exist_ok=True)
