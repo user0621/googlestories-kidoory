@@ -171,6 +171,52 @@ def test_cloudflare_token(token: str) -> Dict[str, Any]:
         return {"ok": False, "message": f"Could not reach Cloudflare to test the token: {e}"}
 
 
+def test_cloudflare_account(account_id: str) -> Dict[str, Any]:
+    """Verify a Cloudflare Account ID using the stored API token. Never raises."""
+    import re
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", account_id or ""):
+        return {"ok": False, "message": "Account ID should be 32 hex characters."}
+    token = config.get("CLOUDFLARE_API_TOKEN", "")
+    if not token:
+        return {"ok": True, "message": "Format looks right. Save the API Token first, then Test to fully verify."}
+    try:
+        import requests
+        resp = requests.get(
+            f"https://api.cloudflare.com/client/v4/accounts/{account_id}",
+            headers={"Authorization": f"Bearer {token}"}, timeout=15
+        )
+        data = resp.json() if resp.content else {}
+        if resp.status_code == 200 and data.get("success"):
+            name = (data.get("result") or {}).get("name", "")
+            return {"ok": True, "message": f"Account verified: {name}".strip()}
+        return {"ok": False, "message": f"Account check failed ({resp.status_code}). Check the ID and that the token can access this account."}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach Cloudflare: {e}"}
+
+
+def test_cloudflare_zone(zone_id: str) -> Dict[str, Any]:
+    """Verify a Cloudflare Zone ID (e.g. quotemixer.site) using the stored API token. Never raises."""
+    import re
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", zone_id or ""):
+        return {"ok": False, "message": "Zone ID should be 32 hex characters."}
+    token = config.get("CLOUDFLARE_API_TOKEN", "")
+    if not token:
+        return {"ok": True, "message": "Format looks right. Save the API Token first, then Test to fully verify."}
+    try:
+        import requests
+        resp = requests.get(
+            f"https://api.cloudflare.com/client/v4/zones/{zone_id}",
+            headers={"Authorization": f"Bearer {token}"}, timeout=15
+        )
+        data = resp.json() if resp.content else {}
+        if resp.status_code == 200 and data.get("success"):
+            name = (data.get("result") or {}).get("name", "")
+            return {"ok": True, "message": f"Zone verified: {name}".strip()}
+        return {"ok": False, "message": f"Zone check failed ({resp.status_code}). Check the ID and the token's DNS permission."}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach Cloudflare: {e}"}
+
+
 def test_deepseek_key(api_key: str) -> Dict[str, Any]:
     """Validate a DeepSeek API key via its OpenAI-compatible /models endpoint (read-only). Never raises."""
     if not api_key or len(api_key) < 20:
@@ -200,6 +246,8 @@ def test_deepseek_key(api_key: str) -> Dict[str, Any]:
 UI_SECRETS = {
     "gemini_api_key": {"env": ["GEMINI_API_KEY", "KIDOORY_GEMINI_API_KEY"], "tester": test_gemini_key, "restart": True},
     "cloudflare_api_token": {"env": ["CLOUDFLARE_API_TOKEN"], "tester": test_cloudflare_token, "restart": False},
+    "cloudflare_account_id": {"env": ["CLOUDFLARE_ACCOUNT_ID"], "tester": test_cloudflare_account, "restart": False},
+    "cloudflare_zone_id": {"env": ["CLOUDFLARE_ZONE_ID"], "tester": test_cloudflare_zone, "restart": False},
     "deepseek_api_key": {"env": ["DEEPSEEK_API_KEY"], "tester": test_deepseek_key, "restart": False},
 }
 
@@ -443,12 +491,14 @@ async def api_secrets(request: Request):
     require_auth(request)
     k_key = config.get("KIDOORY_GEMINI_API_KEY") or config.get("GEMINI_API_KEY", "")
     
-    def mask(val: str, prefix_len=6, suffix_len=4) -> str:
+    def mask(val: str, prefix_len=2, suffix_len=4) -> str:
+        # Consistent policy: reveal only the first 2 and last 4 characters, mask the middle.
+        prefix_len, suffix_len = 2, 4
         if not val:
             return "Not Configured"
         if len(val) <= prefix_len + suffix_len:
             return "••••••••"
-        return f"{val[:prefix_len]}••••••••••••••••{val[-suffix_len:]}"
+        return f"{val[:prefix_len]}••••••••{val[-suffix_len:]}"
 
     client_secret_path = Path("/home/hkserver/secrets/kidoory_client_secret.json")
     client_id = ""
@@ -502,9 +552,19 @@ async def api_secrets(request: Request):
             "configured": bool(refresh_token)
         },
         "cloudflare_api_token": {
-            "masked": mask(config.get("CLOUDFLARE_API_TOKEN", ""), 4, 4),
+            "masked": mask(config.get("CLOUDFLARE_API_TOKEN", "")),
             "label": "Cloudflare API Token (DNS / Workers AI)",
             "configured": bool(config.get("CLOUDFLARE_API_TOKEN"))
+        },
+        "cloudflare_account_id": {
+            "masked": mask(config.get("CLOUDFLARE_ACCOUNT_ID", "")),
+            "label": "Cloudflare Account ID",
+            "configured": bool(config.get("CLOUDFLARE_ACCOUNT_ID"))
+        },
+        "cloudflare_zone_id": {
+            "masked": mask(config.get("CLOUDFLARE_ZONE_ID", "")),
+            "label": "Cloudflare Zone ID (quotemixer.site)",
+            "configured": bool(config.get("CLOUDFLARE_ZONE_ID"))
         },
         "deepseek_api_key": {
             "masked": mask(config.get("DEEPSEEK_API_KEY", ""), 4, 4),
@@ -538,6 +598,10 @@ async def api_reveal_secret(request: Request, payload: dict):
                 return {"value": tdata.get("refresh_token" if secret_name == "youtube_refresh_token" else "token", "")}
     elif secret_name == "cloudflare_api_token":
         return {"value": config.get("CLOUDFLARE_API_TOKEN", "")}
+    elif secret_name == "cloudflare_account_id":
+        return {"value": config.get("CLOUDFLARE_ACCOUNT_ID", "")}
+    elif secret_name == "cloudflare_zone_id":
+        return {"value": config.get("CLOUDFLARE_ZONE_ID", "")}
     elif secret_name == "deepseek_api_key":
         return {"value": config.get("DEEPSEEK_API_KEY", "")}
 

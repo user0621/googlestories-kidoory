@@ -385,6 +385,40 @@
             <span class="muted secret-status" id="cloudflare_api_token_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="cloudflare_api_token_masked">checking…</strong></span>
           </div>
 
+          <!-- Cloudflare Account ID (editable: paste, save, show, test) -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>Cloudflare Account ID</span>
+              <button class="help-mini" onclick="showHelp('key_cloudflare_account')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_cloudflare_account_id" placeholder="Paste Cloudflare Account ID…" autocomplete="off" spellcheck="false" value="">
+              <button class="btn reveal-btn" onclick="showSecretInline('cloudflare_account_id')">👁️ Show</button>
+            </div>
+            <div class="secret-input-group" style="margin-top:8px;">
+              <button class="btn primary" onclick="saveSecret('cloudflare_account_id')">💾 Save</button>
+              <button class="btn secondary" onclick="testSecret('cloudflare_account_id')">🧪 Test</button>
+            </div>
+            <span class="muted secret-status" id="cloudflare_account_id_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="cloudflare_account_id_masked">checking…</strong></span>
+          </div>
+
+          <!-- Cloudflare Zone ID (editable: paste, save, show, test) -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>Cloudflare Zone ID (quotemixer.site)</span>
+              <button class="help-mini" onclick="showHelp('key_cloudflare_zone')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_cloudflare_zone_id" placeholder="Paste Zone ID for quotemixer.site…" autocomplete="off" spellcheck="false" value="">
+              <button class="btn reveal-btn" onclick="showSecretInline('cloudflare_zone_id')">👁️ Show</button>
+            </div>
+            <div class="secret-input-group" style="margin-top:8px;">
+              <button class="btn primary" onclick="saveSecret('cloudflare_zone_id')">💾 Save</button>
+              <button class="btn secondary" onclick="testSecret('cloudflare_zone_id')">🧪 Test</button>
+            </div>
+            <span class="muted secret-status" id="cloudflare_zone_id_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="cloudflare_zone_id_masked">checking…</strong></span>
+          </div>
+
           <!-- DeepSeek API Key (paid fallback) -->
           <div class="secret-item">
             <div class="secret-label">

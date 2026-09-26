@@ -74,6 +74,14 @@ const HELP_TEXTS = {
     title: "Cloudflare API Token",
     content: "A scoped Cloudflare API token used for DNS (e.g. adding kid.quotemixer.site) and, later, Workers AI image/text fallback. Create it at Cloudflare > My Profile > API Tokens > Create Token. Paste, Test, then Save. Stored in .env as CLOUDFLARE_API_TOKEN (chmod 600)."
   },
+  key_cloudflare_account: {
+    title: "Cloudflare Account ID",
+    content: "Your Cloudflare Account ID (32 hex characters). Needed for Workers AI image generation. Find it on any domain's Overview page in the Cloudflare dashboard (right-hand side), per developers.cloudflare.com. Save the API Token first, then Test this to verify. Stored in .env as CLOUDFLARE_ACCOUNT_ID (chmod 600)."
+  },
+  key_cloudflare_zone: {
+    title: "Cloudflare Zone ID (quotemixer.site)",
+    content: "The Zone ID (32 hex characters) for quotemixer.site. Needed only if you want the kid.quotemixer.site subdomain created automatically. Find it on the quotemixer.site Overview page in Cloudflare (right-hand side). Save the API Token first, then Test. Stored in .env as CLOUDFLARE_ZONE_ID (chmod 600)."
+  },
   key_deepseek: {
     title: "DeepSeek API Key (paid fallback)",
     content: "Optional paid fallback for story-script text generation when Gemini is down. OpenAI-compatible API at api.deepseek.com. Paste, Test, then Save. Stored in .env as DEEPSEEK_API_KEY (chmod 600)."
@@ -208,7 +216,7 @@ async function populateSecretMasks() {
       if (el && masked) el.value = masked;
     };
     // Editable secrets: show masked/config state in their status line.
-    ["gemini_api_key", "cloudflare_api_token", "deepseek_api_key"].forEach((name) => {
+    ["gemini_api_key", "cloudflare_api_token", "cloudflare_account_id", "cloudflare_zone_id", "deepseek_api_key"].forEach((name) => {
       const el = document.getElementById(`${name}_masked`);
       if (el && data[name]) el.innerText = data[name].configured ? data[name].masked : "Not configured";
     });
