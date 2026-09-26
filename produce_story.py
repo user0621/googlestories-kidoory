@@ -43,6 +43,12 @@ except Exception:
     def record_gemini_request(kind="text"):
         pass
 
+try:
+    from cloudflare_fallback import generate_image_cloudflare
+except Exception:
+    def generate_image_cloudflare(prompt, steps=6, timeout=90):
+        return None
+
 def get_kidoory_gemini_key():
     key = os.environ.get("KIDOORY_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not key and os.path.exists(ENV_FILE):
@@ -377,7 +383,16 @@ CRITICAL RULES:
                     logger.error(f"[Anchor Visual {idx:02d}] Model {m_name} failed: {e}")
 
             if not saved:
-                logger.error(f"[Anchor Visual {idx:02d}] All candidate models failed. Last error: {last_err}")
+                logger.warning(f"[Anchor Visual {idx:02d}] All Gemini image models failed ({last_err}). Trying Cloudflare Workers AI (Flux) fallback...")
+                cf_bytes = generate_image_cloudflare(prompt)
+                if cf_bytes:
+                    with open(out_img, "wb") as f:
+                        f.write(cf_bytes)
+                    saved = True
+                    logger.info(f"[Anchor Visual {idx:02d}] Cloudflare Flux fallback succeeded, saved to {out_img} ({len(cf_bytes)} bytes)")
+
+            if not saved:
+                logger.error(f"[Anchor Visual {idx:02d}] All candidate models AND Cloudflare fallback failed. Last error: {last_err}")
                 raise RuntimeError(f"Failed to generate frame {idx:02d}: {last_err}")
             self.journal.record_visual_scene(idx, out_img)
             visual_files.append((idx, out_img))

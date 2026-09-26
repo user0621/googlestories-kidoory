@@ -181,15 +181,16 @@ def test_cloudflare_account(account_id: str) -> Dict[str, Any]:
         return {"ok": True, "message": "Format looks right. Save the API Token first, then Test to fully verify."}
     try:
         import requests
+        # Verify via the Workers AI endpoint (what image generation actually uses).
+        # This works with a Workers-AI-scoped token; the /accounts/{id} details
+        # endpoint would need a separate Account-Read permission we don't require.
         resp = requests.get(
-            f"https://api.cloudflare.com/client/v4/accounts/{account_id}",
+            f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search?per_page=1",
             headers={"Authorization": f"Bearer {token}"}, timeout=15
         )
-        data = resp.json() if resp.content else {}
-        if resp.status_code == 200 and data.get("success"):
-            name = (data.get("result") or {}).get("name", "")
-            return {"ok": True, "message": f"Account verified: {name}".strip()}
-        return {"ok": False, "message": f"Account check failed ({resp.status_code}). Check the ID and that the token can access this account."}
+        if resp.status_code == 200:
+            return {"ok": True, "message": "Account ID valid and Workers AI is reachable."}
+        return {"ok": False, "message": f"Account / Workers AI check failed ({resp.status_code}). Check the ID and that the token has Workers AI permission."}
     except Exception as e:
         return {"ok": False, "message": f"Could not reach Cloudflare: {e}"}
 
