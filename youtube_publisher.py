@@ -872,6 +872,15 @@ def save_playlists_registry(path: str, data: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def is_valid_playlist_id(pid: Optional[str]) -> bool:
+    """A real YouTube playlist id starts with 'PL' and is 34 characters long.
+    Placeholder/hand-seeded ids (e.g. the 13-char 'PLYwJ8Yt1EfCs') are rejected
+    so a genuine playlist is created instead of caching a broken one forever."""
+    if not pid or not isinstance(pid, str):
+        return False
+    return pid.startswith("PL") and len(pid) >= 30
+
+
 def get_or_create_movie_playlist(
     youtube,
     movie_id: str,
@@ -884,7 +893,7 @@ def get_or_create_movie_playlist(
     If not on the channel, creates a new playlist for the movie series.
     """
     registry = load_playlists_registry(playlists_path)
-    if movie_id in registry and registry[movie_id].get("playlist_id"):
+    if movie_id in registry and is_valid_playlist_id(registry[movie_id].get("playlist_id")):
         return registry[movie_id]["playlist_id"]
 
     # Search channel playlists
@@ -1052,9 +1061,108 @@ def sync_pending_playlist_items(youtube) -> int:
         except Exception:
             remaining.append(it)
 
-    with open(p_file, "w", encoding="utf-8") as f:
+    tmp = f"{p_file}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(remaining, f, indent=2)
+    os.replace(tmp, p_file)
     return synced
+
+
+def fix_made_for_kids_on_channel(youtube, made_for_kids: bool = True) -> Dict[str, Any]:
+    """
+    Set 'selfDeclaredMadeForKids' on every existing video on the channel.
+    Kidoory is a children's bedtime-story channel, so all videos must be
+    declared Made for Kids (COPPA). Requires youtube / youtube.force-ssl scope.
+    Returns a summary; never raises.
+    """
+    result = {"checked": 0, "updated": 0, "already_ok": 0, "errors": 0, "error_detail": None}
+    try:
+        videos = get_live_channel_videos(youtube)
+        result["checked"] = len(videos)
+        for v in videos:
+            vid = v.get("video_id")
+            if not vid:
+                continue
+            try:
+                cur = youtube.videos().list(part="status", id=vid).execute()
+                items = cur.get("items", [])
+                if not items:
+                    continue
+                status = items[0].get("status", {})
+                if bool(status.get("selfDeclaredMadeForKids")) == made_for_kids:
+                    result["already_ok"] += 1
+                    continue
+                youtube.videos().update(
+                    part="status",
+                    body={"id": vid, "status": {
+                        "selfDeclaredMadeForKids": made_for_kids,
+                        "privacyStatus": status.get("privacyStatus", "public"),
+                        "embeddable": status.get("embeddable", True),
+                        "license": status.get("license", "youtube"),
+                    }}
+                ).execute()
+                result["updated"] += 1
+                logger.info(f"Set madeForKids={made_for_kids} on video {vid}")
+            except Exception as e:
+                result["errors"] += 1
+                result["error_detail"] = str(e)[:200]
+    except Exception as e:
+        result["error_detail"] = str(e)[:200]
+    return result
+
+
+def repair_youtube_state(youtube, playlists_path: str = DEFAULT_PLAYLISTS_FILE) -> Dict[str, Any]:
+    """
+    One-shot corrective pass run after a fresh OAuth reconnect (with playlist scope):
+      1. Recreate real playlists for any movie whose registry id is a fake/short placeholder.
+      2. Remap pending playlist items that referenced the old fake id to the new real id.
+      3. Drain the pending playlist queue into the real playlists.
+      4. Mark every existing channel video as Made for Kids (COPPA).
+    Returns a summary dict; never raises.
+    """
+    summary = {"playlists_repaired": {}, "pending_remapped": 0, "pending_synced": 0, "made_for_kids": {}}
+    try:
+        registry = load_playlists_registry(playlists_path)
+        # 1. Ensure a valid playlist per registered movie, remembering old->new id.
+        id_remap = {}
+        for movie_id, info in list(registry.items()):
+            old_id = info.get("playlist_id")
+            title = info.get("title", movie_id).split(" 🌙")[0]
+            if not is_valid_playlist_id(old_id):
+                new_id = get_or_create_movie_playlist(youtube, movie_id, title, playlists_path)
+                if new_id and new_id != old_id:
+                    if old_id:
+                        id_remap[old_id] = new_id
+                    summary["playlists_repaired"][movie_id] = new_id
+    except Exception as e:
+        summary["error"] = str(e)[:200]
+
+    # 2. Remap pending items whose playlist_id was the old fake id.
+    try:
+        p_file = DEFAULT_PENDING_PLAYLISTS_FILE
+        if os.path.exists(p_file) and id_remap:
+            with open(p_file, "r", encoding="utf-8") as f:
+                items = json.load(f)
+            for it in items:
+                if it.get("playlist_id") in id_remap:
+                    it["playlist_id"] = id_remap[it["playlist_id"]]
+                    summary["pending_remapped"] += 1
+            tmp = f"{p_file}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(items, f, indent=2)
+            os.replace(tmp, p_file)
+    except Exception:
+        pass
+
+    # 3. Drain pending queue into real playlists.
+    try:
+        summary["pending_synced"] = sync_pending_playlist_items(youtube)
+    except Exception:
+        pass
+
+    # 4. Fix Made for Kids on all existing videos.
+    summary["made_for_kids"] = fix_made_for_kids_on_channel(youtube, made_for_kids=True)
+    return summary
 
 
 def sync_with_live_youtube(
@@ -1639,7 +1747,7 @@ def print_queue_status(
     print("  KIDOORY YOUTUBE PUBLISHER: QUEUE & DAILY QUOTA STATUS")
     print("="*70)
     print("1. Audience Setting:")
-    print("   * 'selfDeclaredMadeForKids': False (Strictly Enforced)")
+    print("   * 'selfDeclaredMadeForKids': True (Made for Kids - COPPA compliant)")
     print("\n2. Daily Upload Quota:")
     print(f"   * Today's Date (UTC):       {get_today_str()}")
     print(f"   * Videos Published Today:   {count} / {DAILY_UPLOAD_CAP}")
@@ -1836,7 +1944,7 @@ def publish_story_to_kidoory(
         },
         "status": {
             "privacyStatus": privacy_status,
-            "selfDeclaredMadeForKids": False,
+            "selfDeclaredMadeForKids": True,
             "embeddable": True,
             "license": "youtube"
         }

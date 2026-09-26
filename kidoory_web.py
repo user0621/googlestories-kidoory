@@ -19,10 +19,17 @@ from movie_publisher import publish_movie_episode, find_movie_episode_files
 from youtube_publisher import (
     exchange_code_for_token,
     sync_pending_playlist_items,
+    repair_youtube_state,
     authenticate_youtube,
     SCOPES,
     DEDICATED_CLIENT_SECRETS
 )
+
+try:
+    from usage_tracker import get_gemini_usage
+except Exception:
+    def get_gemini_usage():
+        return {"requests_today": 0, "text_today": 0, "image_today": 0, "daily_limit": 1500, "rpm_limit": 15}
 
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
@@ -70,6 +77,74 @@ def load_json_safe(path: Path) -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+def set_env_vars(updates: Dict[str, str]) -> None:
+    """Update or append KEY=value lines in .env, preserving all other lines. Atomic write.
+    Also refreshes the in-memory config so this process sees the new values immediately."""
+    lines = []
+    if ENV_FILE.exists():
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    remaining = dict(updates)
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                out.append(f"{key}={remaining.pop(key)}")
+                continue
+        out.append(line)
+    for key, val in remaining.items():
+        out.append(f"{key}={val}")
+    tmp = ENV_FILE.with_suffix(".env.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, ENV_FILE)
+    try:
+        os.chmod(ENV_FILE, 0o600)
+    except Exception:
+        pass
+    # Refresh in-memory config for this process
+    for key, val in updates.items():
+        config[key] = val
+
+
+def restart_producer_daemon() -> Dict[str, Any]:
+    """Restart the producer so it picks up a newly saved key. Best-effort; never raises."""
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "systemctl", "restart", "googlestories-kidoory-daemon.service"],
+            capture_output=True, text=True, timeout=30
+        )
+        if r.returncode == 0:
+            return {"restarted": True, "message": "Producer daemon restarted with the new key."}
+        return {"restarted": False, "message": "Saved. Restart the producer for it to take effect."}
+    except Exception:
+        return {"restarted": False, "message": "Saved. Restart the producer for it to take effect."}
+
+
+def test_gemini_key(api_key: str) -> Dict[str, Any]:
+    """Validate a Gemini API key against Google AI Studio (read-only). Never raises."""
+    if not api_key or len(api_key) < 20:
+        return {"ok": False, "message": "No key provided or key looks too short."}
+    try:
+        import requests
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": api_key}, timeout=15
+        )
+        if resp.status_code == 200:
+            n = len(resp.json().get("models", []))
+            return {"ok": True, "message": f"Key is valid. {n} Gemini models available on this key."}
+        try:
+            detail = resp.json().get("error", {}).get("message", resp.text[:200])
+        except Exception:
+            detail = resp.text[:200]
+        return {"ok": False, "status": resp.status_code, "message": f"Key rejected ({resp.status_code}): {detail}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach Google to test the key: {e}"}
 
 # Background action lock
 action_lock = threading.Lock()
@@ -249,13 +324,22 @@ async def api_quotas(request: Request):
     today_uploads_data = upload_ledger.get("daily_counts", {}).get(today_str, {})
     today_uploads_count = today_uploads_data.get("count", 0)
 
-    # Gemini Developer API Free Tier Limits:
-    # 15 RPM (Requests Per Minute), 1,500 RPD (Requests Per Day), Free of charge ($0.00)
-    # Cloud TTS: 1,000,000 characters free / month for Neural2/Journey
-    daily_chars = tts_usage.get("daily_characters", 0)
-    monthly_chars = tts_usage.get("monthly_characters", 0)
-    daily_limit_chars = tts_usage.get("daily_limit", 35000)
-    monthly_limit_chars = tts_usage.get("monthly_limit", 950000)
+    # Cloud TTS: 1,000,000 characters free / month for Neural2/Journey.
+    # tts_usage.json (written by tts_tracker.py) uses keys: monthly_usage + daily_usage{date}.
+    daily_usage_map = tts_usage.get("daily_usage", {})
+    if isinstance(daily_usage_map, dict):
+        daily_chars = daily_usage_map.get(today_str, 0)
+    else:
+        daily_chars = 0
+    monthly_chars = tts_usage.get("monthly_usage", tts_usage.get("chars", 0))
+    daily_limit_chars = 35000
+    monthly_limit_chars = 950000
+
+    # Gemini Developer API Free Tier: 15 RPM, 1,500 requests/day, $0.00.
+    # Real request counts recorded per generation in gemini_usage.json.
+    gemini_usage = get_gemini_usage()
+    gemini_requests_today = gemini_usage.get("requests_today", 0)
+    gemini_daily_limit = gemini_usage.get("daily_limit", 1500)
 
     # YouTube Data API v3 Free Tier: 10,000 units/day.
     # Upload video costs 1600 units each.
@@ -264,13 +348,17 @@ async def api_quotas(request: Request):
 
     return {
         "gemini": {
-            "tier": "Google AI Studio Developer (100% Free Tier)",
+            "tier": "Google AI Studio Developer (Free Tier)",
             "model_text": "gemini-2.5-flash",
             "model_image": "gemini-2.5-flash-image",
-            "daily_requests_limit": 1500,
-            "rpm_limit": 15,
+            "requests_today": gemini_requests_today,
+            "text_today": gemini_usage.get("text_today", 0),
+            "image_today": gemini_usage.get("image_today", 0),
+            "daily_requests_limit": gemini_daily_limit,
+            "daily_pct": round((gemini_requests_today / gemini_daily_limit) * 100, 1) if gemini_daily_limit else 0,
+            "rpm_limit": gemini_usage.get("rpm_limit", 15),
             "cost_usd": 0.00,
-            "cost_status": "Strict Zero Cost Enforced (GOOGLE_GENAI_USE_VERTEXAI=False)"
+            "cost_status": "Google AI Studio, GOOGLE_GENAI_USE_VERTEXAI=False"
         },
         "tts": {
             "provider": "Google Cloud Text-to-Speech (Neural2 / Journey)",
@@ -383,6 +471,45 @@ async def api_reveal_secret(request: Request, payload: dict):
                 return {"value": tdata.get("refresh_token" if secret_name == "youtube_refresh_token" else "token", "")}
 
     raise HTTPException(status_code=400, detail="Unknown secret name")
+
+
+@app.post("/api/secrets/set")
+async def api_set_secret(request: Request, payload: dict):
+    """Save a new API key from the UI. Currently supports the Gemini API key.
+    Writes to .env (GEMINI_API_KEY + KIDOORY_GEMINI_API_KEY) and restarts the producer."""
+    require_auth(request)
+    secret_name = payload.get("secret_name")
+    value = (payload.get("value") or "").strip()
+    if secret_name != "gemini_api_key":
+        raise HTTPException(status_code=400, detail="Only 'gemini_api_key' can be set from the UI.")
+    if not value or len(value) < 20:
+        raise HTTPException(status_code=400, detail="Please paste a valid Gemini API key.")
+
+    # Validate before saving so a bad key is never stored.
+    test = test_gemini_key(value)
+    if not test.get("ok"):
+        return JSONResponse({"status": "invalid", "message": test.get("message", "Key failed validation.")}, status_code=400)
+
+    set_env_vars({"GEMINI_API_KEY": value, "KIDOORY_GEMINI_API_KEY": value})
+    restart = restart_producer_daemon()
+    return {
+        "status": "ok",
+        "message": f"Gemini API key saved and validated. {restart.get('message', '')}".strip(),
+        "restarted": restart.get("restarted", False)
+    }
+
+
+@app.post("/api/secrets/test")
+async def api_test_secret(request: Request, payload: dict):
+    """Test an API key. If a value is supplied, test that; otherwise test the stored key."""
+    require_auth(request)
+    secret_name = payload.get("secret_name", "gemini_api_key")
+    if secret_name != "gemini_api_key":
+        raise HTTPException(status_code=400, detail="Only 'gemini_api_key' can be tested.")
+    value = (payload.get("value") or "").strip()
+    if not value:
+        value = config.get("KIDOORY_GEMINI_API_KEY") or config.get("GEMINI_API_KEY", "")
+    return test_gemini_key(value)
 
 
 @app.post("/api/actions/produce")
@@ -540,18 +667,36 @@ async def api_youtube_auth_code(request: Request, payload: dict):
     if not creds:
         raise HTTPException(status_code=400, detail="Failed to exchange authorization code with Google OAuth endpoint.")
 
-    # Authenticate and sync any pending playlist items
-    synced = 0
+    # Verify the reconnect actually granted playlist/video-management scope.
+    granted = list(getattr(creds, "scopes", None) or [])
+    has_manage = any(("youtube.force-ssl" in s) or s.rstrip("/").endswith("/auth/youtube") for s in granted)
+
+    repair = {}
     try:
         from googleapiclient.discovery import build
         yt = build("youtube", "v3", credentials=creds)
-        synced = sync_pending_playlist_items(yt)
+        repair = repair_youtube_state(yt)
     except Exception as e:
-        pass
+        repair = {"error": str(e)[:200]}
+
+    mfk = repair.get("made_for_kids", {}) or {}
+    msg_parts = ["YouTube reconnected."]
+    if repair.get("playlists_repaired"):
+        msg_parts.append(f"Created {len(repair['playlists_repaired'])} real playlist(s).")
+    if repair.get("pending_synced"):
+        msg_parts.append(f"Added {repair['pending_synced']} video(s) to playlists.")
+    if mfk.get("updated"):
+        msg_parts.append(f"Marked {mfk['updated']} existing video(s) as Made for Kids.")
+    if mfk.get("already_ok"):
+        msg_parts.append(f"{mfk['already_ok']} video(s) were already Made for Kids.")
+    if not has_manage:
+        msg_parts.append("WARNING: playlist-management permission was not granted; re-run and tick all boxes on the consent screen.")
 
     return {
         "status": "ok",
-        "message": f"YouTube credentials upgraded with playlist permissions! Synced {synced} pending playlist items."
+        "granted_manage_scope": has_manage,
+        "repair": repair,
+        "message": " ".join(msg_parts)
     }
 
 

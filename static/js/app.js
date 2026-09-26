@@ -181,6 +181,104 @@ async function revealKey(secretName) {
   }
 }
 
+// Load masked previews for all stored secrets so nothing sits in page source.
+async function populateSecretMasks() {
+  try {
+    const res = await fetch("/api/secrets");
+    if (!res.ok) return;
+    const data = await res.json();
+    const setInput = (id, masked) => {
+      const el = document.getElementById(id);
+      if (el && masked) el.value = masked;
+    };
+    if (data.gemini_api_key) {
+      const g = document.getElementById("gemini_key_masked");
+      if (g) g.innerText = data.gemini_api_key.configured ? data.gemini_api_key.masked : "Not configured";
+    }
+    setInput("input_service_account", data.service_account && data.service_account.masked);
+    setInput("input_youtube_client_id", data.youtube_client_id && data.youtube_client_id.masked);
+    setInput("input_youtube_client_secret", data.youtube_client_secret && data.youtube_client_secret.masked);
+    setInput("input_youtube_refresh_token", data.youtube_refresh_token && data.youtube_refresh_token.masked);
+  } catch (e) { /* non-fatal */ }
+}
+
+// Reveal the CURRENT stored Gemini key briefly in the status line (input stays for new-key entry).
+async function showGeminiCurrent() {
+  const status = document.getElementById("gemini_key_masked");
+  const btn = document.getElementById("btn_gemini_api_key");
+  if (!status) return;
+  btn.disabled = true; btn.innerText = "Fetching…";
+  try {
+    const res = await fetch("/api/secrets/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret_name: "gemini_api_key" })
+    });
+    if (!res.ok) throw new Error("Unauthorized");
+    const data = await res.json();
+    status.innerText = data.value || "(empty)";
+    let s = 6;
+    const t = setInterval(() => {
+      s -= 1;
+      if (s <= 0) { clearInterval(t); populateSecretMasks(); btn.innerText = "👁️ Show"; btn.disabled = false; }
+    }, 1000);
+  } catch (e) {
+    btn.innerText = "👁️ Show"; btn.disabled = false;
+    alert("Could not reveal key: " + e.message);
+  }
+}
+
+// Test a Gemini key: uses the pasted value if present, otherwise the stored key.
+async function testGeminiKey() {
+  const input = document.getElementById("input_gemini_api_key");
+  const status = document.getElementById("gemini_key_status");
+  const btn = document.getElementById("btn_test_gemini");
+  const val = input ? input.value.trim() : "";
+  btn.disabled = true; btn.innerText = "Testing…";
+  try {
+    const res = await fetch("/api/secrets/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret_name: "gemini_api_key", value: val })
+    });
+    const data = await res.json();
+    if (status) status.innerHTML = (data.ok ? "✅ " : "❌ ") + (data.message || "");
+  } catch (e) {
+    if (status) status.innerHTML = "❌ Test request failed: " + e.message;
+  } finally {
+    btn.disabled = false; btn.innerText = "🧪 Test Key";
+  }
+}
+
+// Save a new Gemini key (validated server-side before storing, then producer restarts).
+async function saveGeminiKey() {
+  const input = document.getElementById("input_gemini_api_key");
+  const status = document.getElementById("gemini_key_status");
+  const btn = document.getElementById("btn_save_gemini");
+  const val = input ? input.value.trim() : "";
+  if (!val) { alert("Paste a Gemini API key first."); return; }
+  btn.disabled = true; btn.innerText = "Saving…";
+  try {
+    const res = await fetch("/api/secrets/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret_name: "gemini_api_key", value: val })
+    });
+    const data = await res.json();
+    if (res.ok && data.status === "ok") {
+      if (status) status.innerHTML = "✅ " + (data.message || "Saved.");
+      input.value = "";
+      populateSecretMasks();
+    } else {
+      if (status) status.innerHTML = "❌ " + (data.message || data.detail || "Save failed.");
+    }
+  } catch (e) {
+    if (status) status.innerHTML = "❌ Save request failed: " + e.message;
+  } finally {
+    btn.disabled = false; btn.innerText = "💾 Save Key";
+  }
+}
+
 // Action Trigger Controller
 async function triggerAction(actionName) {
   const banner = document.getElementById("actionBanner");
@@ -265,12 +363,21 @@ async function refreshDashboard() {
 
     if (quotaRes.ok) {
       const qData = await quotaRes.json();
+      const setTxt = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
+      const setW = (id, p) => { const el = document.getElementById(id); if (el) el.style.width = `${Math.min(100, p || 0)}%`; };
+      if (qData.gemini) {
+        setTxt("geminiRequestsUsed", (qData.gemini.requests_today || 0).toLocaleString());
+        setW("geminiBar", qData.gemini.daily_pct);
+      }
       if (qData.tts) {
-        document.getElementById("ttsDailyUsed").innerText = qData.tts.daily_used.toLocaleString();
-        document.getElementById("ttsBar").style.width = `${Math.min(100, qData.tts.daily_pct)}%`;
+        setTxt("ttsDailyUsed", (qData.tts.daily_used || 0).toLocaleString());
+        setTxt("ttsMonthly", (qData.tts.monthly_used || 0).toLocaleString());
+        setW("ttsBar", qData.tts.daily_pct);
       }
       if (qData.youtube) {
-        document.getElementById("ytUnitsUsed").innerText = qData.youtube.units_used.toLocaleString();
+        setTxt("ytUnitsUsed", (qData.youtube.units_used || 0).toLocaleString());
+        setTxt("ytRemaining", (qData.youtube.units_remaining || 0).toLocaleString());
+        setW("ytBar", (qData.youtube.units_used || 0) / 100);
       }
     }
   } catch (err) {
@@ -418,6 +525,9 @@ function updateClock() {
 document.addEventListener("DOMContentLoaded", () => {
   setInterval(updateClock, 1000);
   updateClock();
+  populateSecretMasks();
+  refreshDashboard();
+  setInterval(refreshDashboard, 30000);
   fetch("/api/status").then(r => r.json()).then(d => {
     if (d.running_action) pollActionProgress();
   }).catch(() => {});

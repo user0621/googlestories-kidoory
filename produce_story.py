@@ -37,6 +37,12 @@ from dotenv import load_dotenv, dotenv_values
 ENV_FILE = "/home/hkserver/googlestories-kidoory/.env"
 load_dotenv(ENV_FILE)
 
+try:
+    from usage_tracker import record_gemini_request
+except Exception:
+    def record_gemini_request(kind="text"):
+        pass
+
 def get_kidoory_gemini_key():
     key = os.environ.get("KIDOORY_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not key and os.path.exists(ENV_FILE):
@@ -216,6 +222,7 @@ CRITICAL RULES:
                 )
             )
         response = execute_with_backoff(_gen_story_doc, max_retries=3, op_name="Story Scripting")
+        record_gemini_request("text")
         story_doc: StoryDocument = response.parsed
         story_doc.total_word_count = sum(len(s.narration.split()) for s in story_doc.scenes)
         story_doc.language = self.language_code
@@ -335,6 +342,7 @@ CRITICAL RULES:
 
                 try:
                     resp = execute_with_backoff(_call_img, max_retries=3, base_wait=4.0, op_name=f"Anchor Visual {idx:02d} ({m_name})")
+                    record_gemini_request("image")
                     img_bytes = None
                     if hasattr(resp, "generated_images") and resp.generated_images:
                         for gen_img in resp.generated_images:

@@ -31,7 +31,7 @@
         <button class="close-btn" onclick="closeOAuthModal(event)">×</button>
       </div>
       <div class="modal-body">
-        <p>Grant full YouTube playlist management permissions so Kidoory can automatically add bedtime videos directly into your movie series playlists on channel <strong>@kidoorystory</strong>.</p>
+        <p>Reconnecting grants full YouTube management permission on channel <strong>@kidoorystory</strong>. On submit, Kidoory automatically: creates the real series playlist, adds all pending episodes to it, and marks every existing video as <strong>Made for Kids</strong> (required for a children's channel). Tick every box on Google's consent screen.</p>
         <div style="margin: 16px 0;">
           <a href="#" id="oauthLinkBtn" target="_blank" class="btn primary" style="display:inline-block; text-decoration:none;">
             👉 Step 1: Open Google Consent Screen (solodigital.ltd@gmail.com)
@@ -265,11 +265,11 @@
           </div>
           <p class="quota-sub">Developer API Studio (Script &amp; Director)</p>
           <div class="quota-stat">
-            <span class="stat-number">1,500</span>
-            <span class="stat-unit">Requests/Day Limit</span>
+            <span class="stat-number" id="geminiRequestsUsed">0</span>
+            <span class="stat-unit">Requests Today (Limit: 1,500)</span>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill green" style="width: 2.5%;"></div>
+            <div class="progress-fill green" id="geminiBar" style="width: 0%;"></div>
           </div>
           <div class="quota-meta">
             <span>Rate Limit: <strong>15 RPM</strong></span>
@@ -285,14 +285,14 @@
           </div>
           <p class="quota-sub">Neural2 / Journey High-Fidelity Voice</p>
           <div class="quota-stat">
-            <span class="stat-number" id="ttsDailyUsed">{{ tts_usage.daily_characters or '9,178' }}</span>
+            <span class="stat-number" id="ttsDailyUsed">0</span>
             <span class="stat-unit">Chars Today (Cap: 35,000)</span>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill gold" id="ttsBar" style="width: 26%;"></div>
+            <div class="progress-fill gold" id="ttsBar" style="width: 0%;"></div>
           </div>
           <div class="quota-meta">
-            <span>Monthly: <strong>{{ tts_usage.monthly_characters or '9,178' }} / 1,000,000 Free</strong></span>
+            <span>Monthly: <strong><span id="ttsMonthly">0</span> / 1,000,000 Free</strong></span>
             <span>Cost: <strong>$0.00 Free Tier</strong></span>
           </div>
         </div>
@@ -305,14 +305,14 @@
           </div>
           <p class="quota-sub">Automated Video Publishing Quota</p>
           <div class="quota-stat">
-            <span class="stat-number" id="ytUnitsUsed">4,800</span>
+            <span class="stat-number" id="ytUnitsUsed">0</span>
             <span class="stat-unit">/ 10,000 Daily Units</span>
           </div>
           <div class="progress-bar">
-            <div class="progress-fill cyan" style="width: 48%;"></div>
+            <div class="progress-fill cyan" id="ytBar" style="width: 0%;"></div>
           </div>
           <div class="quota-meta">
-            <span>Remaining: <strong>5,200 units</strong></span>
+            <span>Remaining: <strong><span id="ytRemaining">10,000</span> units</strong></span>
             <span>Cost: <strong>$0.00 Free Quota</strong></span>
           </div>
         </div>
@@ -351,16 +351,21 @@
         <p class="muted">All keys and tokens are securely stored in ~/secrets and .env. Click Reveal to inspect for 6 seconds.</p>
 
         <div class="secret-fields" id="secretFieldsContainer">
-          <!-- Gemini API Key -->
+          <!-- Gemini API Key (editable: paste, save, show, test) -->
           <div class="secret-item">
             <div class="secret-label">
               <span>Kidoory Gemini API Key</span>
               <button class="help-mini" onclick="showHelp('key_gemini')">?</button>
             </div>
             <div class="secret-input-group">
-              <input type="password" id="input_gemini_api_key" readonly value="AIzaSyC3a50b9lMb5FpzClrQOL7qT0mBYcrds3I">
-              <button class="btn reveal-btn" id="btn_gemini_api_key" onclick="revealKey('gemini_api_key')">👁️ Show</button>
+              <input type="password" id="input_gemini_api_key" placeholder="Paste new Gemini API key here…" autocomplete="off" spellcheck="false" value="">
+              <button class="btn reveal-btn" id="btn_gemini_api_key" onclick="showGeminiCurrent()">👁️ Show</button>
             </div>
+            <div class="secret-input-group" style="margin-top:8px;">
+              <button class="btn primary" id="btn_save_gemini" onclick="saveGeminiKey()">💾 Save Key</button>
+              <button class="btn secondary" id="btn_test_gemini" onclick="testGeminiKey()">🧪 Test Key</button>
+            </div>
+            <span class="muted" id="gemini_key_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="gemini_key_masked">checking…</strong></span>
             <span class="timer-tag" id="timer_gemini_api_key" style="display:none;"></span>
           </div>
 
@@ -371,7 +376,7 @@
               <button class="help-mini" onclick="showHelp('key_sa')">?</button>
             </div>
             <div class="secret-input-group">
-              <input type="password" id="input_service_account" readonly value="gemini-agy-linux@kidoory.iam.gserviceaccount.com">
+              <input type="password" id="input_service_account" readonly value="" placeholder="•••• stored in ~/secrets">
               <button class="btn reveal-btn" id="btn_service_account" onclick="revealKey('service_account')">👁️ Show</button>
             </div>
             <span class="timer-tag" id="timer_service_account" style="display:none;"></span>
@@ -384,7 +389,7 @@
               <button class="help-mini" onclick="showHelp('key_yt_client')">?</button>
             </div>
             <div class="secret-input-group">
-              <input type="password" id="input_youtube_client_id" readonly value="105678768886-cu18o6o53785drqik35n93c31ifomq2h.apps.googleusercontent.com">
+              <input type="password" id="input_youtube_client_id" readonly value="" placeholder="•••• stored in ~/secrets">
               <button class="btn reveal-btn" id="btn_youtube_client_id" onclick="revealKey('youtube_client_id')">👁️ Show</button>
             </div>
             <span class="timer-tag" id="timer_youtube_client_id" style="display:none;"></span>
@@ -397,7 +402,7 @@
               <button class="help-mini" onclick="showHelp('key_yt_secret')">?</button>
             </div>
             <div class="secret-input-group">
-              <input type="password" id="input_youtube_client_secret" readonly value="GOCSPX-placeholder">
+              <input type="password" id="input_youtube_client_secret" readonly value="" placeholder="•••• stored in ~/secrets">
               <button class="btn reveal-btn" id="btn_youtube_client_secret" onclick="revealKey('youtube_client_secret')">👁️ Show</button>
             </div>
             <span class="timer-tag" id="timer_youtube_client_secret" style="display:none;"></span>
@@ -410,7 +415,7 @@
               <button class="help-mini" onclick="showHelp('key_yt_token')">?</button>
             </div>
             <div class="secret-input-group">
-              <input type="password" id="input_youtube_refresh_token" readonly value="1//04placeholder">
+              <input type="password" id="input_youtube_refresh_token" readonly value="" placeholder="•••• stored in ~/secrets">
               <button class="btn reveal-btn" id="btn_youtube_refresh_token" onclick="revealKey('youtube_refresh_token')">👁️ Show</button>
             </div>
             <span class="timer-tag" id="timer_youtube_refresh_token" style="display:none;"></span>
@@ -425,7 +430,7 @@
             <div class="scope-row">
               <span class="badge zero-cost">Video Uploads: Active</span>
               <span class="badge format" id="playlistScopeBadge">Playlists: OAuth 2.0</span>
-              <button class="btn secondary mini-btn" onclick="openOAuthUpgradeModal()">🔗 Authorize Playlists</button>
+              <button class="btn secondary mini-btn" onclick="openOAuthUpgradeModal()">🔗 Reconnect YouTube &amp; Fix All</button>
             </div>
           </div>
         </div>
