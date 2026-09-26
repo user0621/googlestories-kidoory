@@ -135,6 +135,14 @@ function closeHelp(e) {
 // Reveal Key with Auto-Hiding Timer
 const revealTimers = {};
 
+// Show only the first 2 and last 4 characters; mask the middle. Never renders the full secret.
+function partialMask(v) {
+  if (!v) return "(empty)";
+  const s = String(v);
+  if (s.length <= 8) return "••••••"; // too short to reveal any part safely
+  return s.slice(0, 2) + "••••••••" + s.slice(-4);
+}
+
 async function revealKey(secretName) {
   const inputEl = document.getElementById(`input_${secretName}`);
   const btnEl = document.getElementById(`btn_${secretName}`);
@@ -161,7 +169,7 @@ async function revealKey(secretName) {
 
     const data = await res.json();
     inputEl.type = "text";
-    inputEl.value = data.value;
+    inputEl.value = partialMask(data.value);
 
     let secondsLeft = 6;
     timerTag.style.display = "block";
@@ -226,7 +234,7 @@ async function showSecretInline(name) {
     });
     if (!res.ok) throw new Error("Unauthorized");
     const data = await res.json();
-    status.innerText = data.value || "(empty)";
+    status.innerText = partialMask(data.value);
     let s = 6;
     const t = setInterval(() => {
       s -= 1;
