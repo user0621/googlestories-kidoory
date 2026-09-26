@@ -70,6 +70,14 @@ const HELP_TEXTS = {
     title: "Google Cloud Service Account",
     content: "The IAM service account (gemini-agy-linux@kidoory.iam.gserviceaccount.com) in project 'kidoory' used to authenticate Google Cloud Text-To-Speech. File: ~/secrets/kidoory-7590452277b9.json."
   },
+  key_cloudflare: {
+    title: "Cloudflare API Token",
+    content: "A scoped Cloudflare API token used for DNS (e.g. adding kid.quotemixer.site) and, later, Workers AI image/text fallback. Create it at Cloudflare > My Profile > API Tokens > Create Token. Paste, Test, then Save. Stored in .env as CLOUDFLARE_API_TOKEN (chmod 600)."
+  },
+  key_deepseek: {
+    title: "DeepSeek API Key (paid fallback)",
+    content: "Optional paid fallback for story-script text generation when Gemini is down. OpenAI-compatible API at api.deepseek.com. Paste, Test, then Save. Stored in .env as DEEPSEEK_API_KEY (chmod 600)."
+  },
   key_yt_client: {
     title: "YouTube OAuth Client ID",
     content: "The Google OAuth 2.0 Web Application client identifier configured in Google Cloud Console under project 'kidoory'."
@@ -191,10 +199,12 @@ async function populateSecretMasks() {
       const el = document.getElementById(id);
       if (el && masked) el.value = masked;
     };
-    if (data.gemini_api_key) {
-      const g = document.getElementById("gemini_key_masked");
-      if (g) g.innerText = data.gemini_api_key.configured ? data.gemini_api_key.masked : "Not configured";
-    }
+    // Editable secrets: show masked/config state in their status line.
+    ["gemini_api_key", "cloudflare_api_token", "deepseek_api_key"].forEach((name) => {
+      const el = document.getElementById(`${name}_masked`);
+      if (el && data[name]) el.innerText = data[name].configured ? data[name].masked : "Not configured";
+    });
+    // Read-only secrets: show masked preview inside their input.
     setInput("input_service_account", data.service_account && data.service_account.masked);
     setInput("input_youtube_client_id", data.youtube_client_id && data.youtube_client_id.masked);
     setInput("input_youtube_client_secret", data.youtube_client_secret && data.youtube_client_secret.masked);
@@ -202,17 +212,17 @@ async function populateSecretMasks() {
   } catch (e) { /* non-fatal */ }
 }
 
-// Reveal the CURRENT stored Gemini key briefly in the status line (input stays for new-key entry).
-async function showGeminiCurrent() {
-  const status = document.getElementById("gemini_key_masked");
-  const btn = document.getElementById("btn_gemini_api_key");
+// Reveal the CURRENT stored secret briefly in its status line (the input stays for new entry).
+async function showSecretInline(name) {
+  const status = document.getElementById(`${name}_masked`);
   if (!status) return;
-  btn.disabled = true; btn.innerText = "Fetching…";
+  const prev = status.innerText;
+  status.innerText = "fetching…";
   try {
     const res = await fetch("/api/secrets/reveal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret_name: "gemini_api_key" })
+      body: JSON.stringify({ secret_name: name })
     });
     if (!res.ok) throw new Error("Unauthorized");
     const data = await res.json();
@@ -220,62 +230,56 @@ async function showGeminiCurrent() {
     let s = 6;
     const t = setInterval(() => {
       s -= 1;
-      if (s <= 0) { clearInterval(t); populateSecretMasks(); btn.innerText = "👁️ Show"; btn.disabled = false; }
+      if (s <= 0) { clearInterval(t); populateSecretMasks(); }
     }, 1000);
   } catch (e) {
-    btn.innerText = "👁️ Show"; btn.disabled = false;
-    alert("Could not reveal key: " + e.message);
+    status.innerText = prev;
+    alert("Could not reveal secret: " + e.message);
   }
 }
 
-// Test a Gemini key: uses the pasted value if present, otherwise the stored key.
-async function testGeminiKey() {
-  const input = document.getElementById("input_gemini_api_key");
-  const status = document.getElementById("gemini_key_status");
-  const btn = document.getElementById("btn_test_gemini");
+// Test a secret: uses the pasted value if present, otherwise the stored one.
+async function testSecret(name) {
+  const input = document.getElementById(`input_${name}`);
+  const status = document.getElementById(`${name}_status`);
   const val = input ? input.value.trim() : "";
-  btn.disabled = true; btn.innerText = "Testing…";
+  if (status) status.innerHTML = "⏳ Testing…";
   try {
     const res = await fetch("/api/secrets/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret_name: "gemini_api_key", value: val })
+      body: JSON.stringify({ secret_name: name, value: val })
     });
     const data = await res.json();
-    if (status) status.innerHTML = (data.ok ? "✅ " : "❌ ") + (data.message || "");
+    if (status) status.innerHTML = (data.ok ? "✅ " : "❌ ") + (data.message || data.detail || "");
   } catch (e) {
     if (status) status.innerHTML = "❌ Test request failed: " + e.message;
-  } finally {
-    btn.disabled = false; btn.innerText = "🧪 Test Key";
   }
 }
 
-// Save a new Gemini key (validated server-side before storing, then producer restarts).
-async function saveGeminiKey() {
-  const input = document.getElementById("input_gemini_api_key");
-  const status = document.getElementById("gemini_key_status");
-  const btn = document.getElementById("btn_save_gemini");
+// Save a secret (validated server-side before storing; Gemini key also restarts the producer).
+async function saveSecret(name) {
+  const input = document.getElementById(`input_${name}`);
+  const status = document.getElementById(`${name}_status`);
   const val = input ? input.value.trim() : "";
-  if (!val) { alert("Paste a Gemini API key first."); return; }
-  btn.disabled = true; btn.innerText = "Saving…";
+  if (!val) { alert("Paste a value first."); return; }
+  if (status) status.innerHTML = "⏳ Validating & saving…";
   try {
     const res = await fetch("/api/secrets/set", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret_name: "gemini_api_key", value: val })
+      body: JSON.stringify({ secret_name: name, value: val })
     });
     const data = await res.json();
     if (res.ok && data.status === "ok") {
       if (status) status.innerHTML = "✅ " + (data.message || "Saved.");
       input.value = "";
-      populateSecretMasks();
+      setTimeout(populateSecretMasks, 1500);
     } else {
       if (status) status.innerHTML = "❌ " + (data.message || data.detail || "Save failed.");
     }
   } catch (e) {
     if (status) status.innerHTML = "❌ Save request failed: " + e.message;
-  } finally {
-    btn.disabled = false; btn.innerText = "💾 Save Key";
   }
 }
 

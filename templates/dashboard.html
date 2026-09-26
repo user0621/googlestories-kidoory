@@ -359,14 +359,47 @@
             </div>
             <div class="secret-input-group">
               <input type="password" id="input_gemini_api_key" placeholder="Paste new Gemini API key here…" autocomplete="off" spellcheck="false" value="">
-              <button class="btn reveal-btn" id="btn_gemini_api_key" onclick="showGeminiCurrent()">👁️ Show</button>
+              <button class="btn reveal-btn" onclick="showSecretInline('gemini_api_key')">👁️ Show</button>
             </div>
             <div class="secret-input-group" style="margin-top:8px;">
-              <button class="btn primary" id="btn_save_gemini" onclick="saveGeminiKey()">💾 Save Key</button>
-              <button class="btn secondary" id="btn_test_gemini" onclick="testGeminiKey()">🧪 Test Key</button>
+              <button class="btn primary" onclick="saveSecret('gemini_api_key')">💾 Save Key</button>
+              <button class="btn secondary" onclick="testSecret('gemini_api_key')">🧪 Test Key</button>
             </div>
-            <span class="muted" id="gemini_key_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="gemini_key_masked">checking…</strong></span>
-            <span class="timer-tag" id="timer_gemini_api_key" style="display:none;"></span>
+            <span class="muted secret-status" id="gemini_api_key_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="gemini_api_key_masked">checking…</strong></span>
+          </div>
+
+          <!-- Cloudflare API Token (editable: paste, save, show, test) -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>Cloudflare API Token (DNS / Workers AI)</span>
+              <button class="help-mini" onclick="showHelp('key_cloudflare')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_cloudflare_api_token" placeholder="Paste Cloudflare API token…" autocomplete="off" spellcheck="false" value="">
+              <button class="btn reveal-btn" onclick="showSecretInline('cloudflare_api_token')">👁️ Show</button>
+            </div>
+            <div class="secret-input-group" style="margin-top:8px;">
+              <button class="btn primary" onclick="saveSecret('cloudflare_api_token')">💾 Save Token</button>
+              <button class="btn secondary" onclick="testSecret('cloudflare_api_token')">🧪 Test Token</button>
+            </div>
+            <span class="muted secret-status" id="cloudflare_api_token_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="cloudflare_api_token_masked">checking…</strong></span>
+          </div>
+
+          <!-- DeepSeek API Key (paid fallback) -->
+          <div class="secret-item">
+            <div class="secret-label">
+              <span>DeepSeek API Key (paid fallback)</span>
+              <button class="help-mini" onclick="showHelp('key_deepseek')">?</button>
+            </div>
+            <div class="secret-input-group">
+              <input type="password" id="input_deepseek_api_key" placeholder="Paste DeepSeek API key…" autocomplete="off" spellcheck="false" value="">
+              <button class="btn reveal-btn" onclick="showSecretInline('deepseek_api_key')">👁️ Show</button>
+            </div>
+            <div class="secret-input-group" style="margin-top:8px;">
+              <button class="btn primary" onclick="saveSecret('deepseek_api_key')">💾 Save Key</button>
+              <button class="btn secondary" onclick="testSecret('deepseek_api_key')">🧪 Test Key</button>
+            </div>
+            <span class="muted secret-status" id="deepseek_api_key_status" style="display:block; margin-top:6px; font-size:0.82rem;">Current: <strong id="deepseek_api_key_masked">checking…</strong></span>
           </div>
 
           <!-- Service Account -->

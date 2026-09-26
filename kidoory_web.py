@@ -146,6 +146,63 @@ def test_gemini_key(api_key: str) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "message": f"Could not reach Google to test the key: {e}"}
 
+
+def test_cloudflare_token(token: str) -> Dict[str, Any]:
+    """Validate a Cloudflare API token via the official verify endpoint (read-only). Never raises."""
+    if not token or len(token) < 20:
+        return {"ok": False, "message": "No token provided or token looks too short."}
+    try:
+        import requests
+        resp = requests.get(
+            "https://api.cloudflare.com/client/v4/user/tokens/verify",
+            headers={"Authorization": f"Bearer {token}"}, timeout=15
+        )
+        data = {}
+        try:
+            data = resp.json()
+        except Exception:
+            pass
+        if resp.status_code == 200 and data.get("success"):
+            status = (data.get("result") or {}).get("status", "active")
+            return {"ok": True, "message": f"Cloudflare token is valid and {status}."}
+        errs = "; ".join(e.get("message", "") for e in data.get("errors", [])) or resp.text[:200]
+        return {"ok": False, "status": resp.status_code, "message": f"Token rejected ({resp.status_code}): {errs}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach Cloudflare to test the token: {e}"}
+
+
+def test_deepseek_key(api_key: str) -> Dict[str, Any]:
+    """Validate a DeepSeek API key via its OpenAI-compatible /models endpoint (read-only). Never raises."""
+    if not api_key or len(api_key) < 20:
+        return {"ok": False, "message": "No key provided or key looks too short."}
+    try:
+        import requests
+        resp = requests.get(
+            "https://api.deepseek.com/models",
+            headers={"Authorization": f"Bearer {api_key}"}, timeout=15
+        )
+        if resp.status_code == 200:
+            try:
+                n = len(resp.json().get("data", []))
+            except Exception:
+                n = 0
+            return {"ok": True, "message": f"DeepSeek key is valid. {n} model(s) available."}
+        try:
+            detail = resp.json().get("error", {}).get("message", resp.text[:200])
+        except Exception:
+            detail = resp.text[:200]
+        return {"ok": False, "status": resp.status_code, "message": f"Key rejected ({resp.status_code}): {detail}"}
+    except Exception as e:
+        return {"ok": False, "message": f"Could not reach DeepSeek to test the key: {e}"}
+
+
+# Registry of secrets manageable from the UI: name -> (env vars to write, tester, restart_daemon?)
+UI_SECRETS = {
+    "gemini_api_key": {"env": ["GEMINI_API_KEY", "KIDOORY_GEMINI_API_KEY"], "tester": test_gemini_key, "restart": True},
+    "cloudflare_api_token": {"env": ["CLOUDFLARE_API_TOKEN"], "tester": test_cloudflare_token, "restart": False},
+    "deepseek_api_key": {"env": ["DEEPSEEK_API_KEY"], "tester": test_deepseek_key, "restart": False},
+}
+
 # Background action lock
 action_lock = threading.Lock()
 current_running_action = None
@@ -443,6 +500,16 @@ async def api_secrets(request: Request):
             "masked": mask(refresh_token, 6, 4),
             "label": "YouTube OAuth Refresh Token (@kidoorystory)",
             "configured": bool(refresh_token)
+        },
+        "cloudflare_api_token": {
+            "masked": mask(config.get("CLOUDFLARE_API_TOKEN", ""), 4, 4),
+            "label": "Cloudflare API Token (DNS / Workers AI)",
+            "configured": bool(config.get("CLOUDFLARE_API_TOKEN"))
+        },
+        "deepseek_api_key": {
+            "masked": mask(config.get("DEEPSEEK_API_KEY", ""), 4, 4),
+            "label": "DeepSeek API Key (paid fallback)",
+            "configured": bool(config.get("DEEPSEEK_API_KEY"))
         }
     }
 
@@ -469,47 +536,56 @@ async def api_reveal_secret(request: Request, payload: dict):
             with open(token_path) as f:
                 tdata = json.load(f)
                 return {"value": tdata.get("refresh_token" if secret_name == "youtube_refresh_token" else "token", "")}
+    elif secret_name == "cloudflare_api_token":
+        return {"value": config.get("CLOUDFLARE_API_TOKEN", "")}
+    elif secret_name == "deepseek_api_key":
+        return {"value": config.get("DEEPSEEK_API_KEY", "")}
 
     raise HTTPException(status_code=400, detail="Unknown secret name")
 
 
 @app.post("/api/secrets/set")
 async def api_set_secret(request: Request, payload: dict):
-    """Save a new API key from the UI. Currently supports the Gemini API key.
-    Writes to .env (GEMINI_API_KEY + KIDOORY_GEMINI_API_KEY) and restarts the producer."""
+    """Save a new API key/token from the UI (gemini_api_key, cloudflare_api_token, deepseek_api_key).
+    Validates against the provider before storing, writes to .env (0600), and restarts the
+    producer only when the secret affects generation (the Gemini key)."""
     require_auth(request)
     secret_name = payload.get("secret_name")
     value = (payload.get("value") or "").strip()
-    if secret_name != "gemini_api_key":
-        raise HTTPException(status_code=400, detail="Only 'gemini_api_key' can be set from the UI.")
+    spec = UI_SECRETS.get(secret_name)
+    if not spec:
+        raise HTTPException(status_code=400, detail=f"'{secret_name}' cannot be set from the UI.")
     if not value or len(value) < 20:
-        raise HTTPException(status_code=400, detail="Please paste a valid Gemini API key.")
+        raise HTTPException(status_code=400, detail="Please paste a valid key/token.")
 
-    # Validate before saving so a bad key is never stored.
-    test = test_gemini_key(value)
+    # Validate before saving so a bad secret is never stored.
+    test = spec["tester"](value)
     if not test.get("ok"):
-        return JSONResponse({"status": "invalid", "message": test.get("message", "Key failed validation.")}, status_code=400)
+        return JSONResponse({"status": "invalid", "message": test.get("message", "Validation failed.")}, status_code=400)
 
-    set_env_vars({"GEMINI_API_KEY": value, "KIDOORY_GEMINI_API_KEY": value})
-    restart = restart_producer_daemon()
-    return {
-        "status": "ok",
-        "message": f"Gemini API key saved and validated. {restart.get('message', '')}".strip(),
-        "restarted": restart.get("restarted", False)
-    }
+    set_env_vars({env: value for env in spec["env"]})
+    msg = "Saved and validated."
+    restarted = False
+    if spec.get("restart"):
+        restart = restart_producer_daemon()
+        msg = f"Saved and validated. {restart.get('message', '')}".strip()
+        restarted = restart.get("restarted", False)
+    return {"status": "ok", "message": msg, "restarted": restarted}
 
 
 @app.post("/api/secrets/test")
 async def api_test_secret(request: Request, payload: dict):
-    """Test an API key. If a value is supplied, test that; otherwise test the stored key."""
+    """Test a key/token. If a value is supplied, test that; otherwise test the stored one."""
     require_auth(request)
     secret_name = payload.get("secret_name", "gemini_api_key")
-    if secret_name != "gemini_api_key":
-        raise HTTPException(status_code=400, detail="Only 'gemini_api_key' can be tested.")
+    spec = UI_SECRETS.get(secret_name)
+    if not spec:
+        raise HTTPException(status_code=400, detail=f"'{secret_name}' cannot be tested.")
     value = (payload.get("value") or "").strip()
     if not value:
-        value = config.get("KIDOORY_GEMINI_API_KEY") or config.get("GEMINI_API_KEY", "")
-    return test_gemini_key(value)
+        for env in spec["env"]:
+            value = config.get(env, "") or value
+    return spec["tester"](value)
 
 
 @app.post("/api/actions/produce")
